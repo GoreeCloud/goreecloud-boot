@@ -160,8 +160,7 @@ pub fn plan_sector_layout(
     total_bytes: u64,
     logical_block_size: u64,
 ) -> Result<SectorDeviceLayout, LayoutError> {
-    if logical_block_size < MIN_LOGICAL_BLOCK_SIZE
-        || logical_block_size > ALIGNMENT_BYTES
+    if !(MIN_LOGICAL_BLOCK_SIZE..=ALIGNMENT_BYTES).contains(&logical_block_size)
         || !logical_block_size.is_power_of_two()
         || ALIGNMENT_BYTES % logical_block_size != 0
     {

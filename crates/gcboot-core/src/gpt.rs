@@ -173,6 +173,15 @@ impl std::fmt::Display for GptError {
 
 impl std::error::Error for GptError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeaderLayout {
+    my_lba: u64,
+    alternate_lba: u64,
+    first_usable_lba: u64,
+    last_usable_lba: u64,
+    partition_entry_lba: u64,
+}
+
 /// Build a standards-shaped primary/backup GPT metadata set for the sector
 /// layout without touching a block device.
 pub fn build_gpt_metadata(
@@ -242,22 +251,26 @@ pub fn build_gpt_metadata(
 
     let primary_header = build_header(
         block_size,
-        primary_header_lba,
-        backup_header_lba,
-        first_usable_lba,
-        last_usable_lba,
+        HeaderLayout {
+            my_lba: primary_header_lba,
+            alternate_lba: backup_header_lba,
+            first_usable_lba,
+            last_usable_lba,
+            partition_entry_lba: primary_entry_lba,
+        },
         identity.disk_guid,
-        primary_entry_lba,
         entry_crc,
     )?;
     let backup_header = build_header(
         block_size,
-        backup_header_lba,
-        primary_header_lba,
-        first_usable_lba,
-        last_usable_lba,
+        HeaderLayout {
+            my_lba: backup_header_lba,
+            alternate_lba: primary_header_lba,
+            first_usable_lba,
+            last_usable_lba,
+            partition_entry_lba: backup_entry_lba,
+        },
         identity.disk_guid,
-        backup_entry_lba,
         entry_crc,
     )?;
     let protective_mbr = build_protective_mbr(block_size, layout.total_lbas)?;
@@ -358,12 +371,8 @@ fn write_partition_name(entry: &mut [u8], name: &str) -> Result<(), GptError> {
 
 fn build_header(
     block_size: usize,
-    my_lba: u64,
-    alternate_lba: u64,
-    first_usable_lba: u64,
-    last_usable_lba: u64,
+    layout: HeaderLayout,
     disk_guid: GptGuid,
-    partition_entry_lba: u64,
     entry_crc: u32,
 ) -> Result<Vec<u8>, GptError> {
     if block_size < GPT_HEADER_SIZE {
@@ -380,12 +389,12 @@ fn build_header(
     );
     put_u32(&mut header, 16, 0);
     put_u32(&mut header, 20, 0);
-    put_u64(&mut header, 24, my_lba);
-    put_u64(&mut header, 32, alternate_lba);
-    put_u64(&mut header, 40, first_usable_lba);
-    put_u64(&mut header, 48, last_usable_lba);
+    put_u64(&mut header, 24, layout.my_lba);
+    put_u64(&mut header, 32, layout.alternate_lba);
+    put_u64(&mut header, 40, layout.first_usable_lba);
+    put_u64(&mut header, 48, layout.last_usable_lba);
     header[56..72].copy_from_slice(&disk_guid.to_disk_bytes());
-    put_u64(&mut header, 72, partition_entry_lba);
+    put_u64(&mut header, 72, layout.partition_entry_lba);
     put_u32(&mut header, 80, GPT_PARTITION_ENTRY_COUNT);
     put_u32(&mut header, 84, GPT_PARTITION_ENTRY_SIZE);
     put_u32(&mut header, 88, entry_crc);
