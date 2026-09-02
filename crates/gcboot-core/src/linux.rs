@@ -797,8 +797,8 @@ mod tests {
             "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
         );
 
-        let first_report =
-            discover_linux_block_devices(&fixture.paths()).expect("first fixture probe must discover");
+        let first_report = discover_linux_block_devices(&fixture.paths())
+            .expect("first fixture probe must discover");
         let token = test_disk(&first_report).revalidation_token();
 
         fixture.write(
