@@ -10,8 +10,8 @@ The current foundation provides:
 
 - a dependency-free Rust workspace for host-side safety, discovery, layout, GPT metadata, catalog logic, and `bootctl`;
 - read-only Linux whole-block-device discovery from sysfs, mount metadata, active-swap metadata, and persistent `by-id` aliases where available;
-- recursive upward Linux storage-topology discovery through sysfs `holders` links, starting from each whole device and its directly enumerated partitions;
-- conservative target assessment that rejects non-removable, read-only, undersized, currently mounted, or active-swap device topologies, while retaining specific mounted-root and mounted-boot rejection evidence;
+- bounded bidirectional Linux storage-topology closure through sysfs `holders` and `slaves` links, starting from each whole device and its directly enumerated partitions;
+- conservative target assessment that rejects non-removable, read-only, undersized, currently mounted, or active-swap device topologies, including related backing members discovered through shared stacked devices;
 - device revalidation tokens incorporating current Linux identity, removable/read-only state, discovered topology, mounted-topology intersection, active-swap topology intersection, `diskseq`, capacity, logical block size, and available persistent identity data;
 - deterministic byte and sector planning for the future `GCBOOT` and `GCDATA` layout;
 - in-memory protective-MBR and redundant GPT metadata generation for 512-byte and 4096-byte logical-block test geometries;
@@ -51,9 +51,11 @@ Mature open-source foundations such as GNU GRUB, EDK II, and optional iPXE may b
 
 Provisioning removable media is inherently destructive. Wrong-disk prevention is a release-blocking requirement.
 
-The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. It follows recursively discovered sysfs `holders` relationships and compares the resulting device topology with all devices represented in `/proc/self/mountinfo`. It also reads `/proc/swaps`, resolves active swap partitions to sysfs major/minor identities, resolves active swap files to the deepest containing mountinfo filesystem, and rejects a candidate when active swap intersects its discovered topology. Incomplete mandatory per-device topology evidence causes the affected candidate to be omitted; unreadable, malformed, unsupported, or unresolvable global active-swap evidence fails Linux discovery rather than permitting targets from incomplete safety evidence.
+The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. For each candidate it starts with the whole device and direct partitions, recursively follows both sysfs `holders` and `slaves` links, canonicalizes each discovered node, and uses cycle protection to form a bounded connected topology. This allows a shared holder such as an array or mapper-style device to bring its other backing members into the same safety evidence. Any non-`NotFound` failure while reading a required `holders` or `slaves` relation causes the affected candidate to be omitted rather than assumed safe.
 
-These controls are still a bounded development model. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, namespace, and other Linux storage relationships are not yet exhaustively qualified for destructive use.
+The resulting topology is compared with all devices represented in `/proc/self/mountinfo`. The implementation also reads `/proc/swaps`, resolves active swap partitions to sysfs major/minor identities, resolves active swap files to the deepest containing mountinfo filesystem, and rejects a candidate when active swap intersects its discovered topology. Unreadable, malformed, unsupported, or unresolvable global active-swap evidence fails Linux discovery rather than permitting targets from incomplete safety evidence.
+
+These controls are still a bounded development model. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespace visibility, unusual storage configurations, and other Linux storage relationships are not yet exhaustively qualified for destructive use.
 
 The GPT development path writes only to a newly created regular sparse file and refuses existing output paths and output beneath `/dev`, `/sys`, or `/proc`.
 
@@ -92,7 +94,7 @@ cargo test --all-targets
 cargo run -p bootctl -- list-linux-devices
 ```
 
-This command reads Linux sysfs, mount, and active-swap metadata, including recursive `holders` topology. It does not open a block-device node for writing.
+This command reads Linux sysfs, mount, and active-swap metadata, including bounded bidirectional `holders`/`slaves` topology. It does not open a block-device node for writing.
 
 ### Plan a discovered Linux device
 

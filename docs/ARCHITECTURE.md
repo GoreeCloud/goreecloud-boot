@@ -10,44 +10,44 @@ This document describes the current native foundation plus intended component bo
 Host development / administration
 │
 ├── bootctl
-│   ├── explicit development evidence input   [implemented]
-│   ├── Linux read-only device discovery      [implemented]
+│   ├── explicit development evidence input    [implemented]
+│   ├── Linux read-only device discovery       [implemented]
 │   ├── bounded topology/mount/swap assessment [implemented]
-│   ├── target-safety assessment              [implemented]
-│   ├── byte/sector layout planning           [implemented]
-│   ├── GPT sparse test-image generation      [implemented]
-│   ├── destructive authorization             [planned]
-│   └── physical provisioning / repair        [planned]
+│   ├── target-safety assessment               [implemented]
+│   ├── byte/sector layout planning            [implemented]
+│   ├── GPT sparse test-image generation       [implemented]
+│   ├── destructive authorization              [planned]
+│   └── physical provisioning / repair         [planned]
 │
 ├── gcboot-core
-│   ├── device safety rules                   [implemented]
-│   ├── Linux discovery/revalidation evidence [implemented]
-│   ├── recursive holder-topology evidence    [implemented, bounded]
-│   ├── active-swap topology evidence         [implemented, bounded]
-│   ├── partition-layout model                [implemented]
-│   ├── GPT metadata generator                [implemented, test-image foundation]
-│   ├── catalog metadata validation           [implemented]
-│   ├── content hashing/signature policy      [planned]
-│   └── compatibility policy                  [planned]
+│   ├── device safety rules                    [implemented]
+│   ├── Linux discovery/revalidation evidence  [implemented]
+│   ├── bidirectional holder/slave topology    [implemented, bounded]
+│   ├── active-swap topology evidence          [implemented, bounded]
+│   ├── partition-layout model                 [implemented]
+│   ├── GPT metadata generator                 [implemented, test-image foundation]
+│   ├── catalog metadata validation            [implemented]
+│   ├── content hashing/signature policy       [planned]
+│   └── compatibility policy                   [planned]
 │
 └── build/test tooling
-    ├── unit tests                             [implemented]
+    ├── unit tests                              [implemented]
     ├── synthetic Linux topology/swap fixtures [implemented]
-    ├── regular-file GPT metadata tests       [implemented]
-    ├── QEMU/OVMF boot harness                [planned]
-    └── release provenance/signing            [planned]
+    ├── regular-file GPT metadata tests        [implemented]
+    ├── QEMU/OVMF boot harness                 [planned]
+    └── release provenance/signing             [planned]
 
 Removable device
 │
-├── GCBOOT                                    [planned physical implementation]
-│   ├── FAT32 filesystem                      [planned]
-│   ├── UEFI boot runtime                     [planned]
-│   ├── boot-method adapters                  [planned]
-│   ├── trusted config                        [planned]
-│   └── recovery metadata                     [planned]
+├── GCBOOT                                     [planned physical implementation]
+│   ├── FAT32 filesystem                       [planned]
+│   ├── UEFI boot runtime                      [planned]
+│   ├── boot-method adapters                   [planned]
+│   ├── trusted config                         [planned]
+│   └── recovery metadata                      [planned]
 │
-└── GCDATA                                    [planned physical implementation]
-    ├── exFAT filesystem                      [planned]
+└── GCDATA                                     [planned physical implementation]
+    ├── exFAT filesystem                       [planned]
     ├── images
     ├── catalog metadata
     ├── checksums/signatures
@@ -94,24 +94,28 @@ Current sources include:
 - `/sys/block/<name>/diskseq` when exposed for current drive-instance identity;
 - device vendor/model/serial/WWID attributes when exposed;
 - direct child-partition `dev` identities;
-- recursive sysfs `holders` links from the whole device and each direct partition to discover upward stacked-device dependencies;
+- recursive sysfs `holders` and `slaves` links from the whole device and each direct partition to discover connected stacked-device relationships in both directions;
 - `/proc/self/mountinfo` for all currently mounted major/minor identities, mount points, and explicit root/boot state;
 - `/proc/swaps` for current active swap areas;
 - `/dev/disk/by-id` for available persistent aliases.
 
 A mutable `/dev/sdX` name is display/current-path evidence, not stable identity by itself.
 
-A device with unreadable mandatory per-device discovery or holder-topology metadata is omitted with a warning rather than being treated as eligible from partial assumptions. Global active-swap evidence is stricter: if `/proc/swaps` cannot be read or an active swap entry cannot be parsed/resolved safely, Linux discovery fails rather than returning candidates based on incomplete system-storage evidence.
+A device with unreadable mandatory per-device discovery or required holder/slave-topology metadata is omitted with a warning rather than being treated as eligible from partial assumptions. Global active-swap evidence is stricter: if `/proc/swaps` cannot be read or an active swap entry cannot be parsed/resolved safely, Linux discovery fails rather than returning candidates based on incomplete system-storage evidence.
 
 ### Current topology and active-use boundary
 
-For each candidate whole device, the implementation starts with the disk and its directly enumerated partitions, then recursively follows sysfs `holders` relationships upward. The resulting major/minor topology is intersected with every major/minor identity reported by mountinfo. If any intersection exists, the candidate is rejected; mounted root and boot remain separately identified for clearer safety evidence.
+For each candidate whole device, the implementation starts with the disk and its directly enumerated partitions, then recursively follows both sysfs `holders` and `slaves` relationships. Every related node is canonicalized before processing, and a canonical-path visited set prevents reciprocal holder/slave links from producing cycles.
+
+Following `holders` finds stacked devices that claim a candidate member. Following `slaves` from those stacked devices closes the bounded graph back down to their other backing members. A candidate participating in a shared mapper/array-style stack can therefore inherit safety evidence from a sibling backing device instead of appearing isolated.
+
+The resulting major/minor topology is intersected with every major/minor identity reported by mountinfo. If any intersection exists, the candidate is rejected; mounted root and boot remain separately identified for clearer safety evidence.
 
 Active swap is resolved separately. Swap partitions from `/proc/swaps` are canonicalized and mapped to their sysfs major/minor identity. Swap files are canonicalized and associated with the deepest mountinfo mount point that contains them. The resulting active-swap device set is intersected with the candidate topology, and any intersection rejects the candidate.
 
-This catches important active stacked-device cases and is covered by synthetic tests including a recursive partition → device-mapper-style holder → RAID-style holder chain, direct and holder-device swap, swap-file backing storage, and swap-state revalidation changes. It is still a **bounded development topology/state model**, not complete destructive-target qualification.
+Synthetic tests cover recursive holder chains, reciprocal holder/slave links, a mounted sibling backing member reached through a shared holder, an active-swap sibling backing member, swap-file backing storage, and revalidation invalidation when a new slave-connected topology member appears.
 
-Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespaces, unusual swap/storage configurations, and other Linux storage relationships require additional validation and possibly additional evidence before physical writes can be enabled. Passing the current topology/active-use assessment does not mean those cases have been exhaustively ruled out.
+This remains a **bounded development topology/state model**, not complete destructive-target qualification. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespaces, unusual storage configurations, and other Linux storage relationships require additional validation and possibly additional evidence before physical writes can be enabled. Passing the current topology/active-use assessment does not mean those cases have been exhaustively ruled out.
 
 ## Revalidation architecture
 
@@ -128,7 +132,7 @@ The current `LinuxRevalidationToken` snapshots selected evidence including:
 - sorted major/minor identities where that topology currently intersects mountinfo;
 - sorted major/minor identities where that topology currently intersects active swap.
 
-Because topology, mounted-topology state, and active-swap topology state are part of the token, a relevant holder, mount, or swap-state change causes token comparison to fail. Synthetic tests verify mount- and swap-state invalidation.
+Because the topology is the bidirectional holder/slave closure, adding or removing a related backing/holder member changes the token even when the original device path remains the same. Mounted-topology and active-swap topology state are also part of the token, so relevant holder/slave, mount, or swap-state changes cause token comparison to fail. Synthetic tests verify these invalidation cases.
 
 A future write path must still perform a fresh discovery and compare identity plus all required safety state close to the write operation. A matching token is necessary evidence, not sufficient authorization.
 

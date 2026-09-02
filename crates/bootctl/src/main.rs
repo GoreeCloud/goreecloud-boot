@@ -490,7 +490,7 @@ USAGE:
 SAFETY:
   plan-device evaluates caller-supplied development evidence only.
   list-linux-devices and plan-linux-device read Linux sysfs, mount, and active-swap metadata,
-  including recursive holder topology, but do not open a block-device node for writing.
+  including bidirectional holders/slaves topology, but do not open a block-device node for writing.
   create-test-gpt-image creates a new sparse regular file only, refuses existing output paths,
   and refuses output under /dev, /sys, or /proc.
   None of these commands authorize or perform physical removable-media provisioning."

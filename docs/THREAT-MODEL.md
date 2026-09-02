@@ -31,7 +31,7 @@ The only current write path creates a **new sparse regular file** for GPT metada
 
 A removable device can change from `/dev/sdb` to another path, or a different device can later appear at the same path.
 
-**Current controls:** Linux discovery records major/minor identity, `diskseq` when available, capacity, logical-block size, removable/read-only state, available WWID/serial/`by-id` identity, bounded recursive holder topology, mounted-topology intersection, and active-swap-topology intersection. A revalidation token can compare a later snapshot, including topology/mount/swap-state changes.
+**Current controls:** Linux discovery records major/minor identity, `diskseq` when available, capacity, logical-block size, removable/read-only state, available WWID/serial/`by-id` identity, bounded bidirectional holder/slave topology, mounted-topology intersection, and active-swap-topology intersection. A revalidation token can compare a later snapshot, including holder/slave topology, mount, and swap-state changes.
 
 **Remaining controls before physical writes:** fresh comprehensive topology/active-use-aware discovery and identity comparison immediately before writes; abort on mismatch; bind the write to the revalidated device as strongly as platform APIs permit.
 
@@ -39,17 +39,17 @@ A removable device can change from `/dev/sdb` to another path, or a different de
 
 Hardware, USB bridges, unusual storage, virtual environments, device mapper, encrypted mappings, software RAID, multipath, or incomplete discovery can produce misleading signals.
 
-**Current controls:** whole-device removable/read-only state; direct child-partition identity; recursive upward sysfs `holders` traversal from the candidate disk and partitions; intersection of the resulting topology with every major/minor identity in mountinfo; conservative rejection when any mounted filesystem is found; explicit root/boot evidence; active-swap discovery from `/proc/swaps` with swap-partition and swap-file backing-device resolution; rejection when active swap intersects the candidate topology; fail-closed omission when mandatory per-device topology evidence is unreadable; fail-closed Linux discovery when mandatory global swap evidence cannot be safely resolved.
+**Current controls:** whole-device removable/read-only state; direct child-partition identity; recursive bidirectional sysfs `holders`/`slaves` traversal from the candidate disk and partitions; canonical-path cycle protection; closure through shared holders to related backing members; intersection of the resulting topology with every major/minor identity in mountinfo; conservative rejection when any mounted filesystem is found; explicit root/boot evidence; active-swap discovery from `/proc/swaps` with swap-partition and swap-file backing-device resolution; rejection when active swap intersects the candidate topology; fail-closed omission when mandatory per-device topology evidence is unreadable; fail-closed Linux discovery when mandatory global swap evidence cannot be safely resolved.
 
-**Residual risk:** the implemented holder/mount/swap model is bounded. Relevant device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespace, unusual swap/storage, and other relationships have not been exhaustively qualified for destructive use.
+**Residual risk:** the implemented holder/slave/mount/swap model is bounded. Relevant device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespace, unusual storage, and other relationships have not been exhaustively qualified for destructive use.
 
 **Required controls before physical writes:** conservative topology/active-use graph sufficient to reject active host storage dependencies; validation across representative complex storage stacks and namespace configurations; multiple independent signals where appropriate; fail closed on contradictory or incomplete critical evidence.
 
 ### T3 — Time-of-check/time-of-use device or topology replacement
 
-The target can disappear and a new device can occupy its path after selection. A holder relationship, mount state, or active-swap state can also change after assessment.
+The target can disappear and a new device can occupy its path after selection. A holder/slave relationship, mounted state, or active-swap state can also change after assessment.
 
-**Current controls:** `LinuxRevalidationToken` captures selected identity, removable/read-only state, discovered topology device numbers, mounted-topology device numbers, and active-swap-topology device numbers for comparison against a later probe. Synthetic tests verify that relevant mount- and swap-state changes invalidate the token.
+**Current controls:** `LinuxRevalidationToken` captures selected identity, removable/read-only state, the complete discovered bidirectional topology device set, mounted-topology device numbers, and active-swap-topology device numbers for comparison against a later probe. Synthetic tests verify that mount/swap changes and the addition of a slave-connected topology member invalidate the token.
 
 **Required controls before physical writes:** fresh discovery close to use; compare stable/current-instance identity and capacity/geometry/topology/active-use state; re-open/re-identify immediately before writes; keep the transaction bound to the verified device handle where possible.
 
@@ -147,23 +147,27 @@ For each Linux whole-device candidate, current discovery:
 
 1. records the whole-device major/minor identity;
 2. records directly enumerated child-partition identities;
-3. recursively follows sysfs `holders` links upward from the disk and those partitions;
-4. builds a sorted set of discovered topology major/minor identities;
-5. parses all major/minor identities and mount points in `/proc/self/mountinfo`;
-6. rejects the candidate when the topology intersects mounted filesystem identities;
-7. parses `/proc/swaps` as mandatory global safety evidence;
-8. resolves active swap partitions through sysfs and active swap files through their deepest containing mountinfo filesystem;
-9. rejects the candidate when the topology intersects resolved active-swap identities; and
-10. places topology, mounted-topology, and active-swap-topology state into the revalidation token.
+3. recursively follows both sysfs `holders` and `slaves` links from the disk and those partitions;
+4. canonicalizes each discovered node and deduplicates canonical paths so reciprocal relation links terminate safely;
+5. follows shared holders back down through their slaves so related backing members can enter the candidate safety topology;
+6. builds a sorted set of discovered topology major/minor identities;
+7. parses all major/minor identities and mount points in `/proc/self/mountinfo`;
+8. rejects the candidate when the topology intersects mounted filesystem identities;
+9. parses `/proc/swaps` as mandatory global safety evidence;
+10. resolves active swap partitions through sysfs and active swap files through their deepest containing mountinfo filesystem;
+11. rejects the candidate when the topology intersects resolved active-swap identities; and
+12. places topology, mounted-topology, and active-swap-topology state into the revalidation token.
 
-Unreadable mandatory per-device topology data fails closed for the affected candidate. Unreadable, malformed, unsupported, or unresolvable active-swap evidence fails Linux discovery globally. This is not a claim that sysfs `holders` plus mountinfo plus `/proc/swaps` is a complete Linux destructive-target safety model.
+Synthetic evidence confirms that a mounted or active-swap sibling backing member discovered through a shared holder rejects the candidate, reciprocal links do not loop, and adding a new slave-connected topology member invalidates a prior revalidation token.
+
+Unreadable mandatory per-device topology data fails closed for the affected candidate. Unreadable, malformed, unsupported, or unresolvable active-swap evidence fails Linux discovery globally. This is not a claim that sysfs `holders`/`slaves` plus mountinfo plus `/proc/swaps` is a complete Linux destructive-target safety model.
 
 ## Release blockers before physical disk writing
 
 The project must not enable or advertise physical destructive provisioning as supported until at least the following exist:
 
 - topology/active-use-aware platform-native device discovery sufficient to protect active host storage across supported Linux configurations;
-- validated coverage across representative device-mapper, encryption, RAID, multipath, hotplug/reconfiguration, namespace, unusual swap/storage, and other system-storage configurations;
+- validated coverage across representative device-mapper, encryption, RAID, multipath, hotplug/reconfiguration, mount/swap namespace, unusual storage, and other system-storage configurations;
 - stable/current-instance identity strategy;
 - fresh pre-write identity, topology, mount, swap, and other required state revalidation;
 - explicit destructive confirmation;
@@ -182,7 +186,7 @@ Because physical block-device writes remain disabled, the primary present risks 
 `CAPABILITIES.md`, CLI output, tests, and review records must continue to state that:
 
 - Linux discovery/topology/swap handling is read-only evidence;
-- recursive `holders` plus mountinfo plus active-swap resolution is bounded and does not yet qualify every destructive-target relationship;
+- bidirectional `holders`/`slaves` closure plus mountinfo and active-swap resolution is bounded and does not yet qualify every destructive-target relationship;
 - a successful assessment/revalidation token is not write authorization;
 - GPT generation is currently a regular-file development path;
 - no bootable or production-capable device is currently produced.
