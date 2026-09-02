@@ -4,7 +4,7 @@
 
 GoreeCloud Boot is in development and is not approved for production, physical provisioning, or recovery-critical use.
 
-The current code intentionally has **no physical block-device write path**. It provides read-only Linux device discovery with bounded recursive topology analysis, target-safety assessment, byte/sector layout planning, GPT metadata generation for new sparse regular-file test images, catalog metadata validation, and development CLI output.
+The current code intentionally has **no physical block-device write path**. It provides read-only Linux device discovery with bounded recursive topology and active-swap analysis, target-safety assessment, byte/sector layout planning, GPT metadata generation for new sparse regular-file test images, catalog metadata validation, and development CLI output.
 
 ## Current implemented safeguards
 
@@ -14,9 +14,12 @@ The development foundation currently includes:
 - recursive upward traversal of sysfs `holders` relationships from each candidate whole disk and its directly enumerated partitions;
 - intersection of that discovered topology with all mounted major/minor identities from `/proc/self/mountinfo`;
 - rejection when any mounted filesystem is present in the discovered topology, with explicit root and boot rejection evidence retained;
+- active-swap discovery from `/proc/swaps`, resolving swap partitions to sysfs major/minor identities and swap files to the deepest containing mountinfo filesystem;
+- rejection when active swap intersects the discovered candidate topology;
 - fail-closed omission of a candidate when mandatory device or holder-topology metadata cannot be read safely;
+- fail-closed Linux discovery when global active-swap metadata is unreadable, malformed, unsupported, or cannot be resolved safely;
 - current device-instance and persistent identity evidence where the Linux system exposes it;
-- a revalidation-token model that binds current identity, removable/read-only state, discovered topology, and mounted-topology state for later comparison;
+- a revalidation-token model that binds current identity, removable/read-only state, discovered topology, mounted-topology state, and active-swap-topology state for later comparison;
 - checked byte and sector geometry arithmetic;
 - GPT usable-range and partition-overlap validation;
 - redundant GPT header/entry-array generation and CRC32 checks;
@@ -33,7 +36,7 @@ These are development safeguards. They are not a security certification, Wardvei
 The following remain release-blocking before a block-device write path can be enabled:
 
 - comprehensive wrong-disk prevention;
-- destructive-target topology qualification beyond the current recursive `holders` layer, including explicit swap handling and validated coverage for relevant device-mapper, encryption, RAID, multipath, hotplug, namespace, and other storage indirection;
+- destructive-target topology qualification beyond the current recursive `holders`, mountinfo, and active-swap layers, including validated coverage for relevant device-mapper, encryption, RAID, multipath, hotplug/reconfiguration, namespace, unusual swap/storage, and other storage indirection;
 - stable/current-instance target identity and immediate pre-write revalidation;
 - explicit destructive user authorization;
 - secure binding between revalidated identity/topology and the write target;
@@ -52,9 +55,11 @@ See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ## Current topology-security boundary
 
-The implemented Linux topology check is intentionally one-way and conservative for the current target question: starting from a candidate whole disk and its direct partitions, it recursively follows sysfs `holders` links upward and records each holder device's major/minor identity. Any device in that discovered topology that appears in mountinfo makes the candidate ineligible.
+The implemented Linux topology check is intentionally conservative for the current target question: starting from a candidate whole disk and its direct partitions, it recursively follows sysfs `holders` links upward and records each holder device's major/minor identity. Any device in that discovered topology that appears in mountinfo makes the candidate ineligible.
 
-This catches important mounted stacked-device cases, including synthetic device-mapper/RAID-style holder chains covered by the test suite. It does **not** establish complete Linux storage safety for destructive use. Swap is not represented in mountinfo, sysfs relationships can change during hotplug/reconfiguration, and not every relevant storage dependency has been independently validated against this model. Physical writes therefore remain disabled.
+Active swap is checked separately because it is not represented by ordinary mountinfo entries. `/proc/swaps` is parsed as mandatory global safety evidence. Swap partitions are resolved to sysfs major/minor identities; swap files are canonicalized and associated with the deepest mountinfo filesystem containing the file. Any resolved swap device that intersects the candidate topology makes the candidate ineligible. If the active-swap table cannot be read, has an unexpected or unsupported entry, or an active swap area cannot be resolved safely, Linux discovery fails closed.
+
+These checks catch important mounted and swap-backed stacked-device cases, including synthetic device-mapper/RAID-style holder chains covered by the test suite. They do **not** establish complete Linux storage safety for destructive use. Sysfs, mount, and swap relationships can change during hotplug/reconfiguration, mount/swap namespaces can alter visible state, and not every relevant device-mapper, encryption, RAID, multipath, unusual swap, or other storage dependency has been independently validated against this model. Physical writes therefore remain disabled.
 
 ## Test-image boundary
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-GoreeCloud Boot is currently a **development foundation**, not a bootable multiboot product release. The verified implementation now includes read-only Linux device discovery with bounded recursive topology analysis, conservative target assessment, byte- and sector-aware layout planning, GPT metadata generation for regular-file test images, catalog validation, and development tooling.
+GoreeCloud Boot is currently a **development foundation**, not a bootable multiboot product release. The verified implementation now includes read-only Linux device discovery with bounded recursive topology and active-swap analysis, conservative target assessment, byte- and sector-aware layout planning, GPT metadata generation for regular-file test images, catalog validation, and development tooling.
 
 No current capability opens a physical block device for writing.
 
@@ -24,16 +24,19 @@ No current capability opens a physical block device for writing.
   - `/dev/disk/by-id` aliases when resolvable;
   - direct child-partition major/minor identities;
   - recursive upward traversal of sysfs `holders` relationships starting from the whole device and its direct partitions;
-  - all mounted major/minor identities from `/proc/self/mountinfo`, with specific root and `/boot`/`/boot/*` evidence retained.
-- Produces a revalidation token from current Linux evidence so a later probe can detect relevant device replacement, state, topology, or mounted-topology changes. The token includes current removable/read-only state, topology device numbers, and the topology intersection with mountinfo in addition to identity/geometry evidence. Matching tokens remain evidence only and are not destructive authorization.
+  - all mounted major/minor identities and mount points from `/proc/self/mountinfo`, with specific root and `/boot`/`/boot/*` evidence retained;
+  - active swap areas from `/proc/swaps`, resolving swap partitions to sysfs major/minor identities and swap files to their deepest containing mounted filesystem.
+- Produces a revalidation token from current Linux evidence so a later probe can detect relevant device replacement, state, topology, mounted-topology, or active-swap changes. The token includes current removable/read-only state, topology device numbers, the topology intersection with mountinfo, and the topology intersection with active swap in addition to identity/geometry evidence. Matching tokens remain evidence only and are not destructive authorization.
 - Conservatively rejects candidate evidence that is:
   - non-removable;
   - read-only;
   - below the minimum supported planning size;
   - known to contain the mounted root filesystem;
   - known to contain a mounted boot filesystem;
-  - known to have any mounted filesystem in the discovered device topology.
+  - known to have any mounted filesystem in the discovered device topology;
+  - known to contain active swap in the discovered device topology.
 - Omits a Linux candidate rather than assuming eligibility when mandatory per-device metadata or recursive holder-topology evidence cannot be read safely.
+- Fails Linux discovery rather than returning potentially eligible targets when mandatory global active-swap metadata is unreadable, malformed, unsupported, or cannot be resolved to a device/filesystem identity.
 - Generates standards-shaped GPT metadata in memory for the planned layout, including:
   - protective MBR;
   - primary and backup GPT headers;
@@ -48,8 +51,8 @@ No current capability opens a physical block device for writing.
 
 A developer can currently use `bootctl` to:
 
-- run `plan-device` with explicit development evidence, including whether any filesystem is mounted on the supplied target evidence, and receive a non-destructive byte-layout proposal;
-- run `list-linux-devices` to inspect read-only Linux block-device metadata, bounded recursive topology evidence, mounted-topology state, and current target assessment;
+- run `plan-device` with explicit development evidence, including whether any filesystem is mounted or active swap is present on the supplied target evidence, and receive a non-destructive byte-layout proposal;
+- run `list-linux-devices` to inspect read-only Linux block-device metadata, bounded recursive topology evidence, mounted-topology state, active-swap topology state, and current target assessment;
 - run `plan-linux-device --device PATH` to select a discovered whole device by device node or discovered `by-id` alias and receive a sector-aware plan without opening the target for writing;
 - run `create-test-gpt-image` to create a **new** sparse regular file containing the generated protective-MBR/GPT metadata and verify that metadata by reading it back.
 
@@ -69,7 +72,7 @@ The read-only Linux discovery command provides development inspection only.
 
 ### Wardveil Security
 
-**Not implemented as a platform integration.** The repository now has stronger native safety controls—read-only device discovery, bounded recursive holder-topology analysis, mounted-filesystem exclusion, topology-aware revalidation tokens, checked sector arithmetic, GPT CRC generation, and no-overwrite regular-file test-image creation—but it does not yet provide Wardveil release provenance, cryptographic image verification, signed trust policy, or tamper response.
+**Not implemented as a platform integration.** The repository now has stronger native safety controls—read-only device discovery, bounded recursive holder-topology analysis, mounted-filesystem exclusion, active-swap exclusion, topology/active-use-aware revalidation tokens, checked sector arithmetic, GPT CRC generation, and no-overwrite regular-file test-image creation—but it does not yet provide Wardveil release provenance, cryptographic image verification, signed trust policy, or tamper response.
 
 ### Privacy Shield
 
@@ -91,8 +94,9 @@ The read-only Linux discovery command provides development inspection only.
 
 - Catalog paths are represented as relative paths.
 - Optional SHA-256 metadata is validated syntactically.
-- Linux discovery reads standard kernel/sysfs and mount metadata without a third-party runtime service.
+- Linux discovery reads standard kernel/sysfs, mount, and active-swap metadata without a third-party runtime service.
 - Recursive topology evidence follows sysfs `holders` links upward from the candidate whole disk and direct partitions.
+- Active swap partitions are resolved to sysfs major/minor identities; active swap files are associated with the deepest containing mountinfo filesystem.
 - GPT metadata follows a protective-MBR plus redundant primary/backup GPT structure and supports the current `GCBOOT`/`GCDATA` partition plan.
 - Generated test images are sparse regular files and contain partition-table metadata only.
 - Current code uses only Rust standard-library functionality and introduces no external Rust runtime dependency.
@@ -117,9 +121,11 @@ Current implemented safeguards include:
 - read-only Linux discovery rather than trusting a device path alone;
 - recursive sysfs `holders` traversal from a whole device and its direct partitions;
 - rejection when any mountinfo-reported filesystem intersects the discovered topology;
+- active-swap discovery from `/proc/swaps` and rejection when resolved swap state intersects the discovered topology;
 - specific mounted root/boot detection for clearer rejection evidence;
-- current-instance `diskseq`, major/minor, capacity, logical-block-size, removable/read-only state, persistent-alias/WWID, serial, topology, and mounted-topology evidence in a revalidation token;
-- fail-closed omission of a candidate when mandatory metadata/topology evidence cannot be read;
+- current-instance `diskseq`, major/minor, capacity, logical-block-size, removable/read-only state, persistent-alias/WWID, serial, topology, mounted-topology, and active-swap-topology evidence in a revalidation token;
+- fail-closed omission of a candidate when mandatory per-device metadata/topology evidence cannot be read;
+- fail-closed Linux discovery when mandatory global swap evidence cannot be read or resolved safely;
 - checked byte and sector arithmetic;
 - GPT usable-range and overlap validation;
 - traversal-resistant catalog-path validation;
@@ -141,9 +147,9 @@ No graphical or firmware user interface is implemented yet. Accessibility requir
 
 ## Automation and API Capabilities
 
-- Cargo tests validate current safety, discovery/topology, layout, GPT, and catalog rules.
+- Cargo tests validate current safety, discovery/topology/swap handling, layout, GPT, and catalog rules.
 - Linux discovery tests use synthetic filesystem/sysfs fixtures rather than CI-runner block devices.
-- Synthetic topology tests cover a mounted direct partition, recursive holder relationships, and revalidation-token changes when mount state changes.
+- Synthetic topology tests cover a mounted direct partition, recursive holder relationships, active swap on direct and holder devices, active swap files, fail-closed unresolved swap evidence, and revalidation-token changes when mount or swap state changes.
 - GPT tests validate CRC32, protective-MBR structure, redundant headers, partition types, and 512/4096-byte logical-block planning.
 - The repository includes CI configuration for formatting, linting, and tests.
 - No external API is exposed.
@@ -153,7 +159,7 @@ No graphical or firmware user interface is implemented yet. Accessibility requir
 The repository cannot currently:
 
 - authorize or perform physical block-device writes;
-- safely account for every Linux system-storage relationship: recursive `holders` traversal is implemented, but swap is not represented by mountinfo and exhaustive device-mapper, multipath, RAID, encryption, hotplug, namespace, and other topology cases are not yet validated for destructive use;
+- safely claim exhaustive Linux destructive-target qualification: recursive `holders` traversal, mounted-filesystem exclusion, and active-swap exclusion are implemented, but device-mapper, multipath, RAID, encryption, hotplug/reconfiguration, mount/swap namespaces, unusual swap/storage configurations, and other topology/state cases are not yet comprehensively validated for destructive use;
 - partition or format removable media;
 - create FAT32 or exFAT filesystems;
 - install a bootloader or UEFI runtime;
@@ -170,6 +176,6 @@ The repository cannot currently:
 
 ## Capability Validation
 
-Current capabilities are validated by Rust unit tests, synthetic Linux discovery/topology fixtures, generated GPT test metadata, and source review. The regular-file GPT path validates generated metadata without physical media.
+Current capabilities are validated by Rust unit tests, synthetic Linux discovery/topology/swap fixtures, generated GPT test metadata, and source review. The regular-file GPT path validates generated metadata without physical media.
 
 No QEMU/OVMF boot evidence, physical removable-media provisioning evidence, filesystem-formatting evidence, hardware compatibility evidence, Stable release qualification, or production acceptance exists yet.
