@@ -357,7 +357,9 @@ fn discover_system_mounts(
                 coverage_complete = false;
                 warnings.push(DiscoveryWarning {
                     context: paths.proc_root.clone(),
-                    message: format!("could not enumerate a visible process for mount safety: {error}"),
+                    message: format!(
+                        "could not enumerate a visible process for mount safety: {error}"
+                    ),
                 });
                 continue;
             }
