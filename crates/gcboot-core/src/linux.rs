@@ -11,6 +11,7 @@ use crate::{DeviceEvidence, TargetAssessment};
 
 const SYSFS_CAPACITY_SECTOR_BYTES: u64 = 512;
 const TOPOLOGY_RELATION_DIRS: [&str; 2] = ["holders", "slaves"];
+const INCOMPLETE_MOUNT_NAMESPACE_COVERAGE_REASON: &str = "mount namespace coverage is incomplete";
 
 /// Linux block-device major/minor identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,6 +57,7 @@ pub struct LinuxProbePaths {
     pub sys_block_root: PathBuf,
     pub dev_root: PathBuf,
     pub dev_disk_by_id: PathBuf,
+    pub proc_root: PathBuf,
     pub mountinfo: PathBuf,
     pub proc_swaps: PathBuf,
 }
@@ -66,6 +68,7 @@ impl Default for LinuxProbePaths {
             sys_block_root: PathBuf::from("/sys/block"),
             dev_root: PathBuf::from("/dev"),
             dev_disk_by_id: PathBuf::from("/dev/disk/by-id"),
+            proc_root: PathBuf::from("/proc"),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
             proc_swaps: PathBuf::from("/proc/swaps"),
         }
@@ -82,6 +85,8 @@ pub struct LinuxBlockDevice {
     pub topology_device_numbers: Vec<DeviceNumber>,
     pub mounted_topology_device_numbers: Vec<DeviceNumber>,
     pub active_swap_topology_device_numbers: Vec<DeviceNumber>,
+    pub mount_namespace_ids: Vec<String>,
+    pub mount_namespace_coverage_complete: bool,
     pub size_bytes: u64,
     pub logical_block_size: u64,
     pub physical_block_size: u64,
@@ -116,7 +121,14 @@ impl LinuxBlockDevice {
 
     #[must_use]
     pub fn assessment(&self) -> TargetAssessment {
-        TargetAssessment::evaluate(&self.evidence())
+        let mut assessment = TargetAssessment::evaluate(&self.evidence());
+        if !self.mount_namespace_coverage_complete {
+            assessment.eligible = false;
+            assessment
+                .reasons
+                .push(INCOMPLETE_MOUNT_NAMESPACE_COVERAGE_REASON);
+        }
+        assessment
     }
 
     /// Return the strongest currently discovered persistent identity evidence.
@@ -147,12 +159,14 @@ impl LinuxBlockDevice {
             topology_device_numbers: self.topology_device_numbers.clone(),
             mounted_topology_device_numbers: self.mounted_topology_device_numbers.clone(),
             active_swap_topology_device_numbers: self.active_swap_topology_device_numbers.clone(),
+            mount_namespace_ids: self.mount_namespace_ids.clone(),
+            mount_namespace_coverage_complete: self.mount_namespace_coverage_complete,
         }
     }
 }
 
 /// A snapshot used to detect path reuse, device replacement, or relevant
-/// topology/mount/swap-state changes between probes.
+/// topology/mount/swap/namespace-state changes between probes.
 ///
 /// A matching token is necessary evidence for a future destructive workflow,
 /// but the current project does not treat it as sufficient authorization.
@@ -169,6 +183,8 @@ pub struct LinuxRevalidationToken {
     pub topology_device_numbers: Vec<DeviceNumber>,
     pub mounted_topology_device_numbers: Vec<DeviceNumber>,
     pub active_swap_topology_device_numbers: Vec<DeviceNumber>,
+    pub mount_namespace_ids: Vec<String>,
+    pub mount_namespace_coverage_complete: bool,
 }
 
 impl LinuxRevalidationToken {
@@ -226,9 +242,20 @@ struct MountPoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SystemMounts {
     mounted_devices: BTreeSet<DeviceNumber>,
-    root_device: DeviceNumber,
+    root_devices: BTreeSet<DeviceNumber>,
     boot_devices: BTreeSet<DeviceNumber>,
     mount_points: Vec<MountPoint>,
+    mount_namespace_ids: Vec<String>,
+    mount_namespace_coverage_complete: bool,
+}
+
+impl SystemMounts {
+    fn merge(&mut self, other: Self) {
+        self.mounted_devices.extend(other.mounted_devices);
+        self.root_devices.extend(other.root_devices);
+        self.boot_devices.extend(other.boot_devices);
+        self.mount_points.extend(other.mount_points);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,20 +264,20 @@ struct PartitionDevice {
     device_number: DeviceNumber,
 }
 
-/// Discover whole Linux block devices using read-only sysfs, mountinfo,
-/// active-swap metadata, and persistent-device alias metadata.
+/// Discover whole Linux block devices using read-only sysfs, visible mount
+/// namespaces, active-swap metadata, and persistent-device alias metadata.
 ///
 /// The function never opens a block-device node. A per-device metadata or
 /// topology failure causes that device to be omitted and reported as a warning.
-/// A failure to resolve global active-swap evidence fails the discovery so
-/// incomplete safety evidence cannot accidentally become an eligible target.
+/// Incomplete visible mount-namespace coverage keeps discovery available for
+/// inspection but makes every candidate ineligible. A failure to resolve global
+/// active-swap evidence fails discovery so incomplete safety evidence cannot
+/// accidentally become an eligible target.
 pub fn discover_linux_block_devices(
     paths: &LinuxProbePaths,
 ) -> Result<LinuxDiscoveryReport, LinuxDiscoveryError> {
-    let mount_text = fs::read_to_string(&paths.mountinfo)
-        .map_err(|error| LinuxDiscoveryError::io(&paths.mountinfo, &error))?;
-    let mounts = parse_system_mounts(&mount_text)
-        .map_err(|message| LinuxDiscoveryError::new(&paths.mountinfo, message))?;
+    let mut warnings = Vec::new();
+    let mounts = discover_system_mounts(paths, &mut warnings)?;
 
     let swap_text = fs::read_to_string(&paths.proc_swaps)
         .map_err(|error| LinuxDiscoveryError::io(&paths.proc_swaps, &error))?;
@@ -260,7 +287,6 @@ pub fn discover_linux_block_devices(
         .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
 
     let mut names = Vec::new();
-    let mut warnings = Vec::new();
 
     for entry in entries {
         match entry {
@@ -307,6 +333,119 @@ pub fn discover_linux_block_devices(
     Ok(LinuxDiscoveryReport { devices, warnings })
 }
 
+fn discover_system_mounts(
+    paths: &LinuxProbePaths,
+    warnings: &mut Vec<DiscoveryWarning>,
+) -> Result<SystemMounts, LinuxDiscoveryError> {
+    let mount_text = fs::read_to_string(&paths.mountinfo)
+        .map_err(|error| LinuxDiscoveryError::io(&paths.mountinfo, &error))?;
+    let mut mounts = parse_system_mounts(&mount_text)
+        .map_err(|message| LinuxDiscoveryError::new(&paths.mountinfo, message))?;
+
+    let current_namespace_path = paths.proc_root.join("self/ns/mnt");
+    let current_namespace_id = read_mount_namespace_id(&current_namespace_path)?;
+    let mut namespace_ids = BTreeSet::from([current_namespace_id]);
+    let mut coverage_complete = true;
+
+    let proc_entries = fs::read_dir(&paths.proc_root)
+        .map_err(|error| LinuxDiscoveryError::io(&paths.proc_root, &error))?;
+
+    for entry in proc_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                coverage_complete = false;
+                warnings.push(DiscoveryWarning {
+                    context: paths.proc_root.clone(),
+                    message: format!("could not enumerate a visible process for mount safety: {error}"),
+                });
+                continue;
+            }
+        };
+
+        let pid_name = match entry.file_name().into_string() {
+            Ok(name) if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) => name,
+            Ok(_) => continue,
+            Err(_) => {
+                coverage_complete = false;
+                warnings.push(DiscoveryWarning {
+                    context: paths.proc_root.clone(),
+                    message: "encountered a non-UTF-8 visible process entry while checking mount namespaces"
+                        .to_owned(),
+                });
+                continue;
+            }
+        };
+
+        let process_root = entry.path();
+        let namespace_path = process_root.join("ns/mnt");
+        let namespace_id = match read_mount_namespace_id(&namespace_path) {
+            Ok(namespace_id) => namespace_id,
+            Err(error) if error.message.contains("No such file") => continue,
+            Err(error) => {
+                coverage_complete = false;
+                warnings.push(DiscoveryWarning {
+                    context: error.context,
+                    message: format!(
+                        "could not inspect visible process {pid_name} mount namespace: {}",
+                        error.message
+                    ),
+                });
+                continue;
+            }
+        };
+
+        if namespace_ids.contains(&namespace_id) {
+            continue;
+        }
+
+        let process_mountinfo = process_root.join("mountinfo");
+        let mount_text = match fs::read_to_string(&process_mountinfo) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                coverage_complete = false;
+                warnings.push(DiscoveryWarning {
+                    context: process_mountinfo,
+                    message: format!(
+                        "could not read visible mount namespace {namespace_id} through process {pid_name}: {error}"
+                    ),
+                });
+                continue;
+            }
+        };
+
+        let namespace_mounts = match parse_system_mounts(&mount_text) {
+            Ok(mounts) => mounts,
+            Err(message) => {
+                coverage_complete = false;
+                warnings.push(DiscoveryWarning {
+                    context: process_mountinfo,
+                    message: format!(
+                        "could not parse visible mount namespace {namespace_id} through process {pid_name}: {message}"
+                    ),
+                });
+                continue;
+            }
+        };
+
+        mounts.merge(namespace_mounts);
+        namespace_ids.insert(namespace_id);
+    }
+
+    mounts.mount_namespace_ids = namespace_ids.into_iter().collect();
+    mounts.mount_namespace_coverage_complete = coverage_complete;
+    Ok(mounts)
+}
+
+fn read_mount_namespace_id(path: &Path) -> Result<String, LinuxDiscoveryError> {
+    let target = fs::read_link(path).map_err(|error| LinuxDiscoveryError::io(path, &error))?;
+    target
+        .into_os_string()
+        .into_string()
+        .map_err(|_| LinuxDiscoveryError::new(path, "mount namespace identity is not UTF-8"))
+}
+
 fn discover_one(
     paths: &LinuxProbePaths,
     mounts: &SystemMounts,
@@ -345,7 +484,10 @@ fn discover_one(
         .copied()
         .collect::<Vec<_>>();
 
-    let contains_mounted_root = topology_set.contains(&mounts.root_device);
+    let contains_mounted_root = mounts
+        .root_devices
+        .iter()
+        .any(|device| topology_set.contains(device));
     let contains_mounted_boot = mounts
         .boot_devices
         .iter()
@@ -363,6 +505,8 @@ fn discover_one(
         topology_device_numbers,
         mounted_topology_device_numbers,
         active_swap_topology_device_numbers,
+        mount_namespace_ids: mounts.mount_namespace_ids.clone(),
+        mount_namespace_coverage_complete: mounts.mount_namespace_coverage_complete,
         size_bytes,
         logical_block_size,
         physical_block_size,
@@ -540,18 +684,36 @@ fn resolve_swap_file_device(
 ) -> Result<DeviceNumber, LinuxDiscoveryError> {
     let canonical =
         fs::canonicalize(swap_path).map_err(|error| LinuxDiscoveryError::io(swap_path, &error))?;
-    mounts
+    let matching_mounts = mounts
         .mount_points
         .iter()
         .filter(|mount| canonical.starts_with(&mount.path))
-        .max_by_key(|mount| mount.path.components().count())
-        .map(|mount| mount.device)
+        .collect::<Vec<_>>();
+    let max_depth = matching_mounts
+        .iter()
+        .map(|mount| mount.path.components().count())
+        .max()
         .ok_or_else(|| {
             LinuxDiscoveryError::new(
                 swap_path,
                 "could not associate active swap file with a mounted filesystem",
             )
-        })
+        })?;
+    let candidate_devices = matching_mounts
+        .into_iter()
+        .filter(|mount| mount.path.components().count() == max_depth)
+        .map(|mount| mount.device)
+        .collect::<BTreeSet<_>>();
+
+    match candidate_devices.len() {
+        1 => Ok(*candidate_devices
+            .first()
+            .expect("one swap-file backing device must be present")),
+        _ => Err(LinuxDiscoveryError::new(
+            swap_path,
+            "active swap file has ambiguous backing filesystems across visible mount namespaces",
+        )),
+    }
 }
 
 fn collect_persistent_aliases(
@@ -681,7 +843,7 @@ fn read_optional_u64(path: &Path, warnings: &mut Vec<DiscoveryWarning>) -> Optio
 
 fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
     let mut mounted_devices = BTreeSet::new();
-    let mut root_device = None;
+    let mut root_devices = BTreeSet::new();
     let mut boot_devices = BTreeSet::new();
     let mut mount_points = Vec::new();
 
@@ -708,19 +870,24 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
         });
 
         if mount_point == Path::new("/") {
-            root_device = Some(device);
+            root_devices.insert(device);
         }
         if mount_point == Path::new("/boot") || mount_point.starts_with("/boot/") {
             boot_devices.insert(device);
         }
     }
 
+    if root_devices.is_empty() {
+        return Err("mountinfo does not identify the mounted root filesystem".to_owned());
+    }
+
     Ok(SystemMounts {
         mounted_devices,
-        root_device: root_device
-            .ok_or_else(|| "mountinfo does not identify the mounted root filesystem".to_owned())?,
+        root_devices,
         boot_devices,
         mount_points,
+        mount_namespace_ids: Vec::new(),
+        mount_namespace_coverage_complete: true,
     })
 }
 
@@ -763,6 +930,7 @@ mod tests {
                 sys_block_root: self.root.join("sys/block"),
                 dev_root: self.root.join("dev"),
                 dev_disk_by_id: self.root.join("dev/disk/by-id"),
+                proc_root: self.root.join("proc"),
                 mountinfo: self.root.join("proc/self/mountinfo"),
                 proc_swaps: self.root.join("proc/swaps"),
             }
@@ -780,6 +948,11 @@ mod tests {
             fs::create_dir_all(path.parent().expect("fixture path must have a parent"))
                 .expect("fixture directory must be creatable");
             symlink(target, path).expect("fixture symlink must be creatable");
+        }
+
+        fn add_mount_namespace(&self, pid: u32, namespace_id: &str, mountinfo: &str) {
+            self.symlink(namespace_id, &format!("proc/{pid}/ns/mnt"));
+            self.write(&format!("proc/{pid}/mountinfo"), mountinfo);
         }
     }
 
@@ -807,6 +980,8 @@ mod tests {
         fixture.write("dev/sdz", "fixture device node placeholder\n");
         fixture.write("dev/sdz1", "fixture partition node placeholder\n");
         fixture.write("proc/swaps", SWAP_HEADER);
+        fixture.symlink("mnt:[100]", "proc/self/ns/mnt");
+        fixture.symlink("mnt:[100]", "proc/100/ns/mnt");
 
         let by_id = fixture.root.join("dev/disk/by-id");
         fs::create_dir_all(&by_id).expect("by-id directory must be creatable");
@@ -896,6 +1071,8 @@ mod tests {
         assert!(!device.contains_mounted_boot);
         assert!(!device.contains_mounted_filesystem);
         assert!(!device.contains_active_swap);
+        assert!(device.mount_namespace_coverage_complete);
+        assert_eq!(device.mount_namespace_ids, vec!["mnt:[100]".to_owned()]);
         assert_eq!(device.diskseq, Some(42));
         assert_eq!(device.wwid.as_deref(), Some("test-wwid-1"));
         assert_eq!(device.persistent_aliases.len(), 1);
@@ -954,6 +1131,58 @@ mod tests {
             vec![DeviceNumber { major: 8, minor: 1 }]
         );
         assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn rejects_disk_when_mounted_only_in_another_visible_mount_namespace() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+        fixture.add_mount_namespace(
+            200,
+            "mnt:[200]",
+            "40 30 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+41 40 8:1 / /hidden rw,relatime - ext4 /dev/sdz1 rw\n",
+        );
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(device.mount_namespace_coverage_complete);
+        assert_eq!(
+            device.mount_namespace_ids,
+            vec!["mnt:[100]".to_owned(), "mnt:[200]".to_owned()]
+        );
+        assert_eq!(
+            device.mounted_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 1 }]
+        );
+        assert!(device.contains_mounted_filesystem);
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn incomplete_visible_mount_namespace_coverage_rejects_candidate() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+        fixture.write("proc/200/ns/mnt", "not a namespace symlink\n");
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(!device.mount_namespace_coverage_complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("mount namespace"))
+        );
+        let assessment = device.assessment();
+        assert!(!assessment.eligible);
+        assert!(
+            assessment
+                .reasons
+                .contains(&INCOMPLETE_MOUNT_NAMESPACE_COVERAGE_REASON)
+        );
     }
 
     #[test]
@@ -1124,6 +1353,43 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_swap_file_backing_across_namespaces_fails_closed() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        let mount_point = fixture.root.join("mnt/test");
+        let swap_file = mount_point.join("swapfile");
+        fixture.write("mnt/test/swapfile", "fixture swap file\n");
+        fixture.write(
+            "proc/self/mountinfo",
+            &format!(
+                "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 8:1 / {} rw,relatime - ext4 /dev/sdz1 rw\n",
+                mount_point.display()
+            ),
+        );
+        fixture.add_mount_namespace(
+            200,
+            "mnt:[200]",
+            &format!(
+                "40 30 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+41 40 8:17 / {} rw,relatime - ext4 /dev/sdy1 rw\n",
+                mount_point.display()
+            ),
+        );
+        fixture.write(
+            "proc/swaps",
+            &format!(
+                "{SWAP_HEADER}{}\tfile\t1048572\t0\t-2\n",
+                swap_file.display()
+            ),
+        );
+
+        let error = discover_linux_block_devices(&fixture.paths())
+            .expect_err("ambiguous swap-file backing must fail discovery");
+        assert!(error.message.contains("ambiguous backing filesystems"));
+    }
+
+    #[test]
     fn unresolved_active_swap_fails_discovery_closed() {
         let fixture = Fixture::new();
         create_test_disk(&fixture);
@@ -1200,6 +1466,32 @@ mod tests {
             major: 8,
             minor: 17
         }));
+    }
+
+    #[test]
+    fn revalidation_token_changes_when_visible_mount_namespace_set_changes() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+
+        let first_report = discover_linux_block_devices(&fixture.paths())
+            .expect("first fixture probe must discover");
+        let token = test_disk(&first_report).revalidation_token();
+
+        fixture.add_mount_namespace(
+            200,
+            "mnt:[200]",
+            "40 30 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
+        );
+        let second_report = discover_linux_block_devices(&fixture.paths())
+            .expect("second fixture probe must discover");
+        let device = test_disk(&second_report);
+
+        assert!(!token.matches(device));
+        assert_eq!(
+            device.mount_namespace_ids,
+            vec!["mnt:[100]".to_owned(), "mnt:[200]".to_owned()]
+        );
     }
 
     #[test]
