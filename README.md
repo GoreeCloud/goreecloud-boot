@@ -10,13 +10,14 @@ The current foundation provides:
 
 - a dependency-free Rust workspace for host-side safety, discovery, layout, GPT metadata, catalog logic, and `bootctl`;
 - read-only Linux whole-block-device discovery from sysfs, mount metadata, and persistent `by-id` aliases where available;
-- conservative target assessment that rejects non-removable, read-only, undersized, mounted-root, and mounted-boot device families;
-- device revalidation tokens incorporating current Linux identity evidence such as major/minor identity, `diskseq`, capacity, logical block size, and available persistent identity data;
+- recursive upward Linux storage-topology discovery through sysfs `holders` links, starting from each whole device and its directly enumerated partitions;
+- conservative target assessment that rejects non-removable, read-only, undersized, or currently mounted device topologies, while retaining specific mounted-root and mounted-boot rejection evidence;
+- device revalidation tokens incorporating current Linux identity, removable/read-only state, discovered topology, mounted-topology intersection, `diskseq`, capacity, logical block size, and available persistent identity data;
 - deterministic byte and sector planning for the future `GCBOOT` and `GCDATA` layout;
 - in-memory protective-MBR and redundant GPT metadata generation for 512-byte and 4096-byte logical-block test geometries;
 - a development command that writes generated GPT metadata only to a **new sparse regular file**, then reads it back for verification;
 - validation for initial catalog-entry identifiers, relative image paths, architecture, boot kind, and optional SHA-256 metadata;
-- unit and synthetic-fixture tests for the implemented safety, Linux discovery, layout, GPT, and catalog rules.
+- unit and synthetic-fixture tests for the implemented safety, Linux discovery/topology, layout, GPT, and catalog rules.
 
 See [CAPABILITIES.md](CAPABILITIES.md) for the canonical current-state capability inventory.
 
@@ -50,17 +51,19 @@ Mature open-source foundations such as GNU GRUB, EDK II, and optional iPXE may b
 
 Provisioning removable media is inherently destructive. Wrong-disk prevention is a release-blocking requirement.
 
-The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. The GPT development path writes only to a newly created regular sparse file and refuses existing output paths and output beneath `/dev`, `/sys`, or `/proc`.
+The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. It follows recursively discovered sysfs `holders` relationships and compares the resulting device topology with all devices represented in `/proc/self/mountinfo`; incomplete mandatory topology evidence causes the affected candidate to be omitted rather than assumed safe. Swap and exhaustive Linux storage-graph analysis are not yet implemented.
+
+The GPT development path writes only to a newly created regular sparse file and refuses existing output paths and output beneath `/dev`, `/sys`, or `/proc`.
 
 Future physical provisioning must, at minimum:
 
 1. discover the requested target from platform evidence rather than trusting a mutable path alone;
-2. reject system/root/boot disks and other contradictory topology by default;
+2. reject active system-storage relationships, including mounted filesystems and swap, by default;
 3. require removable-media evidence;
-4. display stable identity, current-instance identity, geometry, and capacity;
+4. display stable identity, current-instance identity, geometry, topology, and capacity;
 5. require explicit destructive authorization;
-6. revalidate device identity immediately before writes;
-7. fail safely if device identity or topology changes; and
+6. revalidate device identity and topology immediately before writes;
+7. fail safely if device identity, topology, mount state, or other critical safety evidence changes; and
 8. complete image-backed destructive integration tests before physical write support is enabled.
 
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
@@ -87,7 +90,7 @@ cargo test --all-targets
 cargo run -p bootctl -- list-linux-devices
 ```
 
-This command reads Linux sysfs and mount metadata. It does not open a block-device node for writing.
+This command reads Linux sysfs and mount metadata, including recursive `holders` topology. It does not open a block-device node for writing.
 
 ### Plan a discovered Linux device
 
@@ -117,6 +120,7 @@ cargo run -p bootctl -- plan-device \
   --removable yes \
   --root-mounted no \
   --boot-mounted no \
+  --filesystem-mounted no \
   --read-only no
 ```
 

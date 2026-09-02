@@ -63,13 +63,15 @@ The repository currently implements these development capabilities:
 - conservative target-safety assessment;
 - read-only Linux whole-block-device discovery from sysfs, mountinfo, and available persistent aliases;
 - collection of current device identity evidence including major/minor number, capacity, logical/physical block size, `diskseq` when available, and available WWID/serial/`by-id` identity;
-- directly enumerated child-partition association with mounted root and boot filesystems;
-- revalidation tokens for later comparison of selected device identity evidence;
+- directly enumerated child-partition identities plus recursive upward sysfs `holders` traversal to build a bounded candidate topology;
+- association of the discovered topology with every mountinfo-reported major/minor identity, with explicit root/boot state retained and any mounted topology rejected;
+- fail-closed omission of a candidate when mandatory device or holder-topology evidence cannot be read safely;
+- revalidation tokens that bind identity/geometry, removable/read-only state, discovered topology, and mounted-topology intersection for later comparison;
 - in-memory protective-MBR and redundant GPT header/entry-array generation with CRC32;
 - development-only sparse regular-file GPT image creation with no-overwrite behavior and read-back metadata verification;
 - initial catalog-entry validation;
 - development `bootctl` inspection/planning/test-image commands;
-- unit and synthetic-fixture tests for those rules.
+- unit and synthetic-fixture tests for those rules, including recursive holder topology and mount-state revalidation changes.
 
 No physical block-device write, filesystem formatting, bootloader installation, image booting, cryptographic content verification, or production recovery write path is currently implemented.
 
@@ -77,12 +79,13 @@ No physical block-device write, filesystem formatting, bootloader installation, 
 
 The Linux discovery layer is read-only and must remain separable from future destructive authorization.
 
-Current discovery reads standard Linux metadata sufficient to identify whole block devices and directly enumerated child partitions. It must not treat a mutable path such as `/dev/sdb` as stable identity by itself.
+Current discovery reads standard Linux metadata sufficient to identify whole block devices, directly enumerated child partitions, and a bounded upward holder topology. It must not treat a mutable path such as `/dev/sdb` as stable identity by itself.
 
 Current discovery evidence includes, where available:
 
 - whole-device major/minor identity;
 - child-partition major/minor identities;
+- recursively discovered sysfs `holders` device identities;
 - kernel device name and current `/dev` node;
 - capacity;
 - logical and physical block sizes;
@@ -90,11 +93,14 @@ Current discovery evidence includes, where available:
 - `diskseq` current-instance identity;
 - vendor, model, serial, and WWID;
 - resolved `/dev/disk/by-id` aliases;
-- mounted root and boot associations from mountinfo.
+- all mounted major/minor identities from mountinfo;
+- explicit mounted root and boot associations.
 
-Discovery failure or missing mandatory geometry data must fail conservatively for the affected device rather than fabricating eligibility.
+A candidate topology currently starts with the whole device plus its direct partitions and recursively follows `holders` links upward. Discovery failure or missing mandatory device/topology data must fail conservatively for the affected device rather than fabricating eligibility.
 
-Before any physical destructive write path can be enabled, Linux topology analysis must be extended or otherwise validated to conservatively handle relevant device-mapper stacks, encrypted mappings, software RAID, multipath, swap, and other storage relationships that could hide a system-disk dependency.
+Any mounted filesystem whose major/minor identity intersects the discovered topology makes the target ineligible. This is a stronger development safeguard than root/boot-only matching, but it is not complete destructive-target qualification.
+
+Before any physical destructive write path can be enabled, Linux topology analysis must be extended or independently validated to conservatively handle explicit swap state and all relevant device-mapper, encrypted mapping, software RAID, multipath, hotplug, namespace, and other storage relationships that could hide or introduce a system-disk dependency.
 
 ## 7. Target-safety and authorization requirements
 
@@ -104,12 +110,12 @@ Before writes are permitted, the implementation must:
 
 1. discover and record current target identity;
 2. positively establish removable-media eligibility using sufficient evidence;
-3. reject known root, boot, swap, system-disk, or contradictory storage topology;
+3. reject known mounted filesystems, root, boot, swap, system-disk, or contradictory storage topology;
 4. reject read-only or undersized media;
 5. show stable/current identity, geometry, topology, and capacity to the user;
 6. require explicit destructive authorization;
-7. re-read and compare target identity immediately before writes;
-8. abort on target disappearance, replacement, identity change, or contradictory evidence;
+7. re-read and compare target identity and safety-relevant topology/state immediately before writes;
+8. abort on target disappearance, replacement, identity change, mount/topology change, or contradictory evidence;
 9. bind writes to the revalidated target as strongly as platform APIs reasonably permit;
 10. perform interruption-aware partition/boot updates where practical; and
 11. preserve `GCDATA` during routine boot-runtime update and repair operations.
@@ -228,8 +234,9 @@ Identity is not required for the bare offline boot menu. It becomes applicable o
 
 Required validation grows with implementation and includes, where applicable:
 
-- unit tests for safety, discovery, catalog, layout, and GPT rules;
+- unit tests for safety, discovery/topology, catalog, layout, and GPT rules;
 - synthetic Linux sysfs/mount fixtures rather than reliance on CI-runner disk topology;
+- recursive holder-chain, mounted-topology, topology-change, and fail-closed discovery cases;
 - property/boundary testing for arithmetic and malformed input;
 - regular-file destructive metadata tests before block-device writes;
 - virtual UEFI testing with QEMU/OVMF;
@@ -257,4 +264,4 @@ The first bootable milestone is a non-Stable UEFI x86-64 prototype that can even
 - update or repair `GCBOOT` without erasing `GCDATA`;
 - run under QEMU/OVMF before physical-device acceptance.
 
-The current repository has advanced the safety foundation through read-only Linux discovery, sector-aware planning, and regular-file GPT metadata generation. Physical provisioning and boot execution remain outside the implemented boundary.
+The current repository has advanced the safety foundation through read-only Linux discovery with bounded recursive holder topology, mounted-filesystem exclusion, topology-aware revalidation evidence, sector-aware planning, and regular-file GPT metadata generation. Physical provisioning and boot execution remain outside the implemented boundary.

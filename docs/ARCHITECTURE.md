@@ -12,6 +12,7 @@ Host development / administration
 ├── bootctl
 │   ├── explicit development evidence input   [implemented]
 │   ├── Linux read-only device discovery      [implemented]
+│   ├── bounded topology/mount assessment     [implemented]
 │   ├── target-safety assessment              [implemented]
 │   ├── byte/sector layout planning           [implemented]
 │   ├── GPT sparse test-image generation      [implemented]
@@ -21,6 +22,7 @@ Host development / administration
 ├── gcboot-core
 │   ├── device safety rules                   [implemented]
 │   ├── Linux discovery/revalidation evidence [implemented]
+│   ├── recursive holder-topology evidence    [implemented, bounded]
 │   ├── partition-layout model                [implemented]
 │   ├── GPT metadata generator                [implemented, test-image foundation]
 │   ├── catalog metadata validation           [implemented]
@@ -29,7 +31,7 @@ Host development / administration
 │
 └── build/test tooling
     ├── unit tests                             [implemented]
-    ├── synthetic Linux discovery fixtures    [implemented]
+    ├── synthetic Linux topology fixtures     [implemented]
     ├── regular-file GPT metadata tests       [implemented]
     ├── QEMU/OVMF boot harness                [planned]
     └── release provenance/signing            [planned]
@@ -68,10 +70,10 @@ The workspace currently uses no external Rust runtime crates. This keeps the fir
 The safety design separates these concepts:
 
 1. **Discovery** — read current platform evidence about candidate devices.
-2. **Evidence** — normalized facts about identity, topology, geometry, and state.
+2. **Evidence** — normalized facts about identity, topology, geometry, mounts, and state.
 3. **Assessment** — conservative policy evaluation that can reject a target.
 4. **Selection** — explicit user choice of one discovered candidate.
-5. **Revalidation** — fresh comparison of selected identity/topology immediately before a future write.
+5. **Revalidation** — fresh comparison of selected identity/topology/state immediately before a future write.
 6. **Authorization** — a future destructive-operation decision requiring explicit consent after successful revalidation.
 
 The current code implements discovery, evidence, assessment, selection for planning, and a revalidation-token data model. It does **not** implement destructive authorization or physical writes.
@@ -91,16 +93,21 @@ Current sources include:
 - `/sys/block/<name>/diskseq` when exposed for current drive-instance identity;
 - device vendor/model/serial/WWID attributes when exposed;
 - direct child-partition `dev` identities;
-- `/proc/self/mountinfo` for mounted root and boot major/minor identities;
+- recursive sysfs `holders` links from the whole device and each direct partition to discover upward stacked-device dependencies;
+- `/proc/self/mountinfo` for all currently mounted major/minor identities plus explicit root and boot state;
 - `/dev/disk/by-id` for available persistent aliases.
 
 A mutable `/dev/sdX` name is display/current-path evidence, not stable identity by itself.
 
-A device with unreadable mandatory discovery metadata is omitted with a warning rather than being treated as eligible from partial assumptions.
+A device with unreadable mandatory discovery or holder-topology metadata is omitted with a warning rather than being treated as eligible from partial assumptions.
 
 ### Current topology boundary
 
-Directly enumerated child partitions are associated with their whole device for root/boot rejection. This is not yet sufficient for all Linux storage stacks. Before physical writes, the topology layer must conservatively account for relevant device-mapper, LUKS/encryption, software RAID, multipath, swap, and other relationships that can make a seemingly removable block device part of active system storage.
+For each candidate whole device, the implementation starts with the disk and its directly enumerated partitions, then recursively follows sysfs `holders` relationships upward. The resulting major/minor topology is intersected with every major/minor identity reported by mountinfo. If any intersection exists, the candidate is rejected; mounted root and boot remain separately identified for clearer safety evidence.
+
+This catches important active stacked-device cases and is covered by synthetic tests including a recursive partition → device-mapper-style holder → RAID-style holder chain. It is still a **bounded development topology model**, not complete destructive-target qualification.
+
+Swap is not represented by mountinfo. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount namespaces, and other Linux storage relationships require additional validation and possibly additional evidence before physical writes can be enabled. Passing the current topology assessment does not mean those cases have been exhaustively ruled out.
 
 ## Revalidation architecture
 
@@ -110,10 +117,15 @@ The current `LinuxRevalidationToken` snapshots selected evidence including:
 - `diskseq` when available;
 - capacity;
 - logical block size;
+- current removable and read-only state;
 - strongest current persistent identity discovered by the implementation;
-- serial when exposed.
+- serial when exposed;
+- sorted major/minor identities in the discovered candidate topology;
+- sorted major/minor identities where that topology currently intersects mountinfo.
 
-A future write path must perform a fresh discovery and compare identity plus topology close to the write operation. A matching token is necessary evidence, not sufficient authorization.
+Because topology and mounted-topology state are part of the token, a relevant holder or mount-state change causes token comparison to fail. Synthetic tests verify mount-state invalidation.
+
+A future write path must still perform a fresh discovery and compare identity plus all required safety state close to the write operation. A matching token is necessary evidence, not sufficient authorization.
 
 ## Layout architecture
 

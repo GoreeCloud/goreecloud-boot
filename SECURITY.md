@@ -4,16 +4,19 @@
 
 GoreeCloud Boot is in development and is not approved for production, physical provisioning, or recovery-critical use.
 
-The current code intentionally has **no physical block-device write path**. It provides read-only Linux device discovery, target-safety assessment, byte/sector layout planning, GPT metadata generation for new sparse regular-file test images, catalog metadata validation, and development CLI output.
+The current code intentionally has **no physical block-device write path**. It provides read-only Linux device discovery with bounded recursive topology analysis, target-safety assessment, byte/sector layout planning, GPT metadata generation for new sparse regular-file test images, catalog metadata validation, and development CLI output.
 
 ## Current implemented safeguards
 
 The development foundation currently includes:
 
 - read-only Linux device metadata discovery rather than trusting a mutable `/dev` path alone;
-- mounted root and boot rejection for the discovered whole-device/direct-partition family;
+- recursive upward traversal of sysfs `holders` relationships from each candidate whole disk and its directly enumerated partitions;
+- intersection of that discovered topology with all mounted major/minor identities from `/proc/self/mountinfo`;
+- rejection when any mounted filesystem is present in the discovered topology, with explicit root and boot rejection evidence retained;
+- fail-closed omission of a candidate when mandatory device or holder-topology metadata cannot be read safely;
 - current device-instance and persistent identity evidence where the Linux system exposes it;
-- a revalidation-token model for comparing later discovery evidence;
+- a revalidation-token model that binds current identity, removable/read-only state, discovered topology, and mounted-topology state for later comparison;
 - checked byte and sector geometry arithmetic;
 - GPT usable-range and partition-overlap validation;
 - redundant GPT header/entry-array generation and CRC32 checks;
@@ -30,10 +33,10 @@ These are development safeguards. They are not a security certification, Wardvei
 The following remain release-blocking before a block-device write path can be enabled:
 
 - comprehensive wrong-disk prevention;
-- topology-aware root/boot/swap/system-storage exclusion, including relevant device-mapper, encryption, RAID, multipath, and other indirection;
+- destructive-target topology qualification beyond the current recursive `holders` layer, including explicit swap handling and validated coverage for relevant device-mapper, encryption, RAID, multipath, hotplug, namespace, and other storage indirection;
 - stable/current-instance target identity and immediate pre-write revalidation;
 - explicit destructive user authorization;
-- secure binding between revalidated identity and the write target;
+- secure binding between revalidated identity/topology and the write target;
 - production-unique GPT identity generation;
 - independent GPT/parser validation;
 - image-backed end-to-end provisioning tests;
@@ -46,6 +49,12 @@ The following remain release-blocking before a block-device write path can be en
 - clear separation between trusted GoreeCloud components and unverified user images.
 
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
+## Current topology-security boundary
+
+The implemented Linux topology check is intentionally one-way and conservative for the current target question: starting from a candidate whole disk and its direct partitions, it recursively follows sysfs `holders` links upward and records each holder device's major/minor identity. Any device in that discovered topology that appears in mountinfo makes the candidate ineligible.
+
+This catches important mounted stacked-device cases, including synthetic device-mapper/RAID-style holder chains covered by the test suite. It does **not** establish complete Linux storage safety for destructive use. Swap is not represented in mountinfo, sysfs relationships can change during hotplug/reconfiguration, and not every relevant storage dependency has been independently validated against this model. Physical writes therefore remain disabled.
 
 ## Test-image boundary
 
