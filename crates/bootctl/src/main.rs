@@ -324,6 +324,18 @@ fn print_linux_device(device: &LinuxBlockDevice) {
         "  active swap topology device numbers: {}",
         format_device_numbers(&device.active_swap_topology_device_numbers)
     );
+    println!(
+        "  visible mount namespaces: {}",
+        if device.mount_namespace_ids.is_empty() {
+            "none".to_owned()
+        } else {
+            device.mount_namespace_ids.join(", ")
+        }
+    );
+    println!(
+        "  visible mount namespace coverage complete: {}",
+        yes_no(device.mount_namespace_coverage_complete)
+    );
     println!("  diskseq: {}", optional_u64(device.diskseq));
     println!("  vendor: {}", optional_text(device.vendor.as_deref()));
     println!("  model: {}", optional_text(device.model.as_deref()));
@@ -489,8 +501,9 @@ USAGE:
 
 SAFETY:
   plan-device evaluates caller-supplied development evidence only.
-  list-linux-devices and plan-linux-device read Linux sysfs, mount, and active-swap metadata,
-  including bidirectional holders/slaves topology, but do not open a block-device node for writing.
+  list-linux-devices and plan-linux-device read Linux sysfs, visible mount-namespace,
+  mount, and active-swap metadata, including bidirectional holders/slaves topology,
+  but do not open a block-device node for writing.
   create-test-gpt-image creates a new sparse regular file only, refuses existing output paths,
   and refuses output under /dev, /sys, or /proc.
   None of these commands authorize or perform physical removable-media provisioning."
