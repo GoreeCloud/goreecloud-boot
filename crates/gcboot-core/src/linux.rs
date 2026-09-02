@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::{DeviceEvidence, TargetAssessment};
 
 const SYSFS_CAPACITY_SECTOR_BYTES: u64 = 512;
+const TOPOLOGY_RELATION_DIRS: [&str; 2] = ["holders", "slaves"];
 
 /// Linux block-device major/minor identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -419,19 +420,22 @@ fn collect_topology_device_numbers(
 
         device_numbers.insert(read_device_number(&canonical_path.join("dev"))?);
 
-        let holders_path = canonical_path.join("holders");
-        let holders = match fs::read_dir(&holders_path) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(LinuxDiscoveryError::io(&holders_path, &error)),
-        };
+        for relation_name in TOPOLOGY_RELATION_DIRS {
+            let relation_path = canonical_path.join(relation_name);
+            let related_devices = match fs::read_dir(&relation_path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(LinuxDiscoveryError::io(&relation_path, &error)),
+            };
 
-        for holder in holders {
-            let holder = holder.map_err(|error| LinuxDiscoveryError::io(&holders_path, &error))?;
-            let holder_path = holder.path();
-            let canonical_holder = fs::canonicalize(&holder_path)
-                .map_err(|error| LinuxDiscoveryError::io(&holder_path, &error))?;
-            queue.push_back(canonical_holder);
+            for related_device in related_devices {
+                let related_device = related_device
+                    .map_err(|error| LinuxDiscoveryError::io(&relation_path, &error))?;
+                let related_path = related_device.path();
+                let canonical_related = fs::canonicalize(&related_path)
+                    .map_err(|error| LinuxDiscoveryError::io(&related_path, &error))?;
+                queue.push_back(canonical_related);
+            }
         }
     }
 
@@ -813,6 +817,23 @@ mod tests {
         .expect("fixture symlink must be creatable");
     }
 
+    fn create_peer_partition(fixture: &Fixture) {
+        fixture.write("sys/block/sdy/sdy1/dev", "8:17\n");
+        fixture.write("dev/sdy1", "fixture peer partition node placeholder\n");
+    }
+
+    fn connect_test_disk_to_shared_holder(fixture: &Fixture, include_peer: bool) {
+        fixture.write("sys/block/md0/dev", "9:0\n");
+        fixture.symlink("../../../md0", "sys/block/sdz/sdz1/holders/md0");
+        fixture.symlink("../../sdz/sdz1", "sys/block/md0/slaves/sdz1");
+
+        if include_peer {
+            create_peer_partition(fixture);
+            fixture.symlink("../../sdy/sdy1", "sys/block/md0/slaves/sdy1");
+            fixture.symlink("../../../md0", "sys/block/sdy/sdy1/holders/md0");
+        }
+    }
+
     fn write_root_mount(fixture: &Fixture) {
         fixture.write(
             "proc/self/mountinfo",
@@ -972,6 +993,54 @@ mod tests {
     }
 
     #[test]
+    fn bidirectional_topology_handles_reciprocal_links_and_rejects_mounted_peer() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        connect_test_disk_to_shared_holder(&fixture, true);
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 8:17 / /srv/peer rw,relatime - ext4 /dev/sdy1 rw\n",
+        );
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert_eq!(
+            device.topology_device_numbers,
+            vec![
+                DeviceNumber { major: 8, minor: 0 },
+                DeviceNumber { major: 8, minor: 1 },
+                DeviceNumber { major: 8, minor: 17 },
+                DeviceNumber { major: 9, minor: 0 }
+            ]
+        );
+        assert_eq!(
+            device.mounted_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 17 }]
+        );
+        assert!(device.contains_mounted_filesystem);
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn rejects_disk_when_slave_connected_peer_is_active_swap() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        connect_test_disk_to_shared_holder(&fixture, true);
+        write_root_mount(&fixture);
+        write_swap_partition(&fixture, &fixture.root.join("dev/sdy1"));
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(device.contains_active_swap);
+        assert_eq!(
+            device.active_swap_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 17 }]
+        );
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
     fn rejects_disk_when_partition_is_active_swap() {
         let fixture = Fixture::new();
         create_test_disk(&fixture);
@@ -1097,6 +1166,32 @@ mod tests {
 
         assert!(!token.matches(device));
         assert!(device.contains_active_swap);
+    }
+
+    #[test]
+    fn revalidation_token_changes_when_slave_connected_topology_changes() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        connect_test_disk_to_shared_holder(&fixture, false);
+        write_root_mount(&fixture);
+
+        let first_report = discover_linux_block_devices(&fixture.paths())
+            .expect("first fixture probe must discover");
+        let token = test_disk(&first_report).revalidation_token();
+
+        create_peer_partition(&fixture);
+        fixture.symlink("../../sdy/sdy1", "sys/block/md0/slaves/sdy1");
+        fixture.symlink("../../../md0", "sys/block/sdy/sdy1/holders/md0");
+        let second_report = discover_linux_block_devices(&fixture.paths())
+            .expect("second fixture probe must discover");
+        let device = test_disk(&second_report);
+
+        assert!(!token.matches(device));
+        assert!(
+            device
+                .topology_device_numbers
+                .contains(&DeviceNumber { major: 8, minor: 17 })
+        );
     }
 
     #[test]
