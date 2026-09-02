@@ -56,6 +56,7 @@ pub struct LinuxProbePaths {
     pub dev_root: PathBuf,
     pub dev_disk_by_id: PathBuf,
     pub mountinfo: PathBuf,
+    pub proc_swaps: PathBuf,
 }
 
 impl Default for LinuxProbePaths {
@@ -65,6 +66,7 @@ impl Default for LinuxProbePaths {
             dev_root: PathBuf::from("/dev"),
             dev_disk_by_id: PathBuf::from("/dev/disk/by-id"),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
+            proc_swaps: PathBuf::from("/proc/swaps"),
         }
     }
 }
@@ -78,6 +80,7 @@ pub struct LinuxBlockDevice {
     pub partition_device_numbers: Vec<DeviceNumber>,
     pub topology_device_numbers: Vec<DeviceNumber>,
     pub mounted_topology_device_numbers: Vec<DeviceNumber>,
+    pub active_swap_topology_device_numbers: Vec<DeviceNumber>,
     pub size_bytes: u64,
     pub logical_block_size: u64,
     pub physical_block_size: u64,
@@ -86,6 +89,7 @@ pub struct LinuxBlockDevice {
     pub contains_mounted_root: bool,
     pub contains_mounted_boot: bool,
     pub contains_mounted_filesystem: bool,
+    pub contains_active_swap: bool,
     pub diskseq: Option<u64>,
     pub vendor: Option<String>,
     pub model: Option<String>,
@@ -104,6 +108,7 @@ impl LinuxBlockDevice {
             contains_mounted_root: self.contains_mounted_root,
             contains_mounted_boot: self.contains_mounted_boot,
             contains_mounted_filesystem: self.contains_mounted_filesystem,
+            contains_active_swap: self.contains_active_swap,
             read_only: self.read_only,
         }
     }
@@ -140,12 +145,13 @@ impl LinuxBlockDevice {
             serial: self.serial.clone(),
             topology_device_numbers: self.topology_device_numbers.clone(),
             mounted_topology_device_numbers: self.mounted_topology_device_numbers.clone(),
+            active_swap_topology_device_numbers: self.active_swap_topology_device_numbers.clone(),
         }
     }
 }
 
 /// A snapshot used to detect path reuse, device replacement, or relevant
-/// topology/mount-state changes between probes.
+/// topology/mount/swap-state changes between probes.
 ///
 /// A matching token is necessary evidence for a future destructive workflow,
 /// but the current project does not treat it as sufficient authorization.
@@ -161,6 +167,7 @@ pub struct LinuxRevalidationToken {
     pub serial: Option<String>,
     pub topology_device_numbers: Vec<DeviceNumber>,
     pub mounted_topology_device_numbers: Vec<DeviceNumber>,
+    pub active_swap_topology_device_numbers: Vec<DeviceNumber>,
 }
 
 impl LinuxRevalidationToken {
@@ -210,10 +217,17 @@ impl Display for LinuxDiscoveryError {
 impl Error for LinuxDiscoveryError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MountPoint {
+    device: DeviceNumber,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SystemMounts {
     mounted_devices: BTreeSet<DeviceNumber>,
     root_device: DeviceNumber,
     boot_devices: BTreeSet<DeviceNumber>,
+    mount_points: Vec<MountPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,12 +236,13 @@ struct PartitionDevice {
     device_number: DeviceNumber,
 }
 
-/// Discover whole Linux block devices using read-only sysfs, mountinfo, and
-/// persistent-device alias metadata.
+/// Discover whole Linux block devices using read-only sysfs, mountinfo,
+/// active-swap metadata, and persistent-device alias metadata.
 ///
 /// The function never opens a block-device node. A per-device metadata or
-/// topology failure causes that device to be omitted and reported as a warning
-/// so incomplete evidence cannot accidentally become an eligible target.
+/// topology failure causes that device to be omitted and reported as a warning.
+/// A failure to resolve global active-swap evidence fails the discovery so
+/// incomplete safety evidence cannot accidentally become an eligible target.
 pub fn discover_linux_block_devices(
     paths: &LinuxProbePaths,
 ) -> Result<LinuxDiscoveryReport, LinuxDiscoveryError> {
@@ -235,6 +250,10 @@ pub fn discover_linux_block_devices(
         .map_err(|error| LinuxDiscoveryError::io(&paths.mountinfo, &error))?;
     let mounts = parse_system_mounts(&mount_text)
         .map_err(|message| LinuxDiscoveryError::new(&paths.mountinfo, message))?;
+
+    let swap_text = fs::read_to_string(&paths.proc_swaps)
+        .map_err(|error| LinuxDiscoveryError::io(&paths.proc_swaps, &error))?;
+    let active_swap_devices = discover_active_swap_devices(paths, &mounts, &swap_text)?;
 
     let entries = fs::read_dir(&paths.sys_block_root)
         .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
@@ -268,7 +287,14 @@ pub fn discover_linux_block_devices(
             continue;
         }
 
-        match discover_one(paths, &mounts, &name, &sys_device, &mut warnings) {
+        match discover_one(
+            paths,
+            &mounts,
+            &active_swap_devices,
+            &name,
+            &sys_device,
+            &mut warnings,
+        ) {
             Ok(device) => devices.push(device),
             Err(error) => warnings.push(DiscoveryWarning {
                 context: error.context,
@@ -283,6 +309,7 @@ pub fn discover_linux_block_devices(
 fn discover_one(
     paths: &LinuxProbePaths,
     mounts: &SystemMounts,
+    active_swap_devices: &BTreeSet<DeviceNumber>,
     kernel_name: &str,
     sys_device: &Path,
     warnings: &mut Vec<DiscoveryWarning>,
@@ -312,6 +339,10 @@ fn discover_one(
         .intersection(&topology_set)
         .copied()
         .collect::<Vec<_>>();
+    let active_swap_topology_device_numbers = active_swap_devices
+        .intersection(&topology_set)
+        .copied()
+        .collect::<Vec<_>>();
 
     let contains_mounted_root = topology_set.contains(&mounts.root_device);
     let contains_mounted_boot = mounts
@@ -319,6 +350,7 @@ fn discover_one(
         .iter()
         .any(|device| topology_set.contains(device));
     let contains_mounted_filesystem = !mounted_topology_device_numbers.is_empty();
+    let contains_active_swap = !active_swap_topology_device_numbers.is_empty();
     let devnode = paths.dev_root.join(kernel_name);
     let persistent_aliases = collect_persistent_aliases(paths, &devnode, warnings);
 
@@ -329,6 +361,7 @@ fn discover_one(
         partition_device_numbers,
         topology_device_numbers,
         mounted_topology_device_numbers,
+        active_swap_topology_device_numbers,
         size_bytes,
         logical_block_size,
         physical_block_size,
@@ -337,6 +370,7 @@ fn discover_one(
         contains_mounted_root,
         contains_mounted_boot,
         contains_mounted_filesystem,
+        contains_active_swap,
         diskseq: read_optional_u64(&sys_device.join("diskseq"), warnings),
         vendor: read_optional_text(&sys_device.join("device/vendor"), warnings),
         model: read_optional_text(&sys_device.join("device/model"), warnings),
@@ -404,6 +438,117 @@ fn collect_topology_device_numbers(
     Ok(device_numbers.into_iter().collect())
 }
 
+fn discover_active_swap_devices(
+    paths: &LinuxProbePaths,
+    mounts: &SystemMounts,
+    swap_text: &str,
+) -> Result<BTreeSet<DeviceNumber>, LinuxDiscoveryError> {
+    let mut lines = swap_text.lines();
+    let header = lines.next().ok_or_else(|| {
+        LinuxDiscoveryError::new(&paths.proc_swaps, "active-swap table is empty")
+    })?;
+    let header_fields = header.split_whitespace().collect::<Vec<_>>();
+    if header_fields.len() < 2 || header_fields[0] != "Filename" || header_fields[1] != "Type" {
+        return Err(LinuxDiscoveryError::new(
+            &paths.proc_swaps,
+            "active-swap table has an unexpected header",
+        ));
+    }
+
+    let mut devices = BTreeSet::new();
+    for (index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 5 {
+            return Err(LinuxDiscoveryError::new(
+                &paths.proc_swaps,
+                format!("active-swap line {} is too short to parse safely", index + 2),
+            ));
+        }
+
+        let swap_path = PathBuf::from(decode_proc_path_field(fields[0]));
+        let device = match fields[1] {
+            "partition" => resolve_swap_partition_device(paths, &swap_path)?,
+            "file" => resolve_swap_file_device(mounts, &swap_path)?,
+            swap_type => {
+                return Err(LinuxDiscoveryError::new(
+                    &paths.proc_swaps,
+                    format!(
+                        "active-swap line {} has unsupported type {swap_type}",
+                        index + 2
+                    ),
+                ));
+            }
+        };
+        devices.insert(device);
+    }
+
+    Ok(devices)
+}
+
+fn resolve_swap_partition_device(
+    paths: &LinuxProbePaths,
+    swap_path: &Path,
+) -> Result<DeviceNumber, LinuxDiscoveryError> {
+    let canonical =
+        fs::canonicalize(swap_path).map_err(|error| LinuxDiscoveryError::io(swap_path, &error))?;
+    let kernel_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            LinuxDiscoveryError::new(
+                swap_path,
+                "active swap block-device path has no UTF-8 kernel name",
+            )
+        })?;
+
+    if let Some(device) = try_read_device_number(
+        &paths.sys_block_root.join(kernel_name).join("dev"),
+    )? {
+        return Ok(device);
+    }
+
+    let entries = fs::read_dir(&paths.sys_block_root)
+        .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
+        if let Some(device) =
+            try_read_device_number(&entry.path().join(kernel_name).join("dev"))?
+        {
+            return Ok(device);
+        }
+    }
+
+    Err(LinuxDiscoveryError::new(
+        swap_path,
+        format!("could not resolve active swap block device {kernel_name} in sysfs"),
+    ))
+}
+
+fn resolve_swap_file_device(
+    mounts: &SystemMounts,
+    swap_path: &Path,
+) -> Result<DeviceNumber, LinuxDiscoveryError> {
+    let canonical =
+        fs::canonicalize(swap_path).map_err(|error| LinuxDiscoveryError::io(swap_path, &error))?;
+    mounts
+        .mount_points
+        .iter()
+        .filter(|mount| canonical.starts_with(&mount.path))
+        .max_by_key(|mount| mount.path.components().count())
+        .map(|mount| mount.device)
+        .ok_or_else(|| {
+            LinuxDiscoveryError::new(
+                swap_path,
+                "could not associate active swap file with a mounted filesystem",
+            )
+        })
+}
+
 fn collect_persistent_aliases(
     paths: &LinuxProbePaths,
     devnode: &Path,
@@ -467,6 +612,16 @@ fn read_device_number(path: &Path) -> Result<DeviceNumber, LinuxDiscoveryError> 
     DeviceNumber::parse(&value).map_err(|error| LinuxDiscoveryError::new(path, error.to_string()))
 }
 
+fn try_read_device_number(path: &Path) -> Result<Option<DeviceNumber>, LinuxDiscoveryError> {
+    match fs::read_to_string(path) {
+        Ok(value) => DeviceNumber::parse(&value)
+            .map(Some)
+            .map_err(|error| LinuxDiscoveryError::new(path, error.to_string())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(LinuxDiscoveryError::io(path, &error)),
+    }
+}
+
 fn read_u64(path: &Path) -> Result<u64, LinuxDiscoveryError> {
     let value = read_text(path)?;
     value
@@ -523,6 +678,7 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
     let mut mounted_devices = BTreeSet::new();
     let mut root_device = None;
     let mut boot_devices = BTreeSet::new();
+    let mut mount_points = Vec::new();
 
     for (line_number, line) in mountinfo.lines().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -539,13 +695,17 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
                 line_number + 1
             )
         })?;
-        let mount_point = decode_mountinfo_field(fields[4]);
+        let mount_point = PathBuf::from(decode_proc_path_field(fields[4]));
         mounted_devices.insert(device);
+        mount_points.push(MountPoint {
+            device,
+            path: mount_point.clone(),
+        });
 
-        if mount_point == "/" {
+        if mount_point == Path::new("/") {
             root_device = Some(device);
         }
-        if mount_point == "/boot" || mount_point.starts_with("/boot/") {
+        if mount_point == Path::new("/boot") || mount_point.starts_with("/boot/") {
             boot_devices.insert(device);
         }
     }
@@ -555,10 +715,11 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
         root_device: root_device
             .ok_or_else(|| "mountinfo does not identify the mounted root filesystem".to_owned())?,
         boot_devices,
+        mount_points,
     })
 }
 
-fn decode_mountinfo_field(value: &str) -> String {
+fn decode_proc_path_field(value: &str) -> String {
     value
         .replace("\\040", " ")
         .replace("\\011", "\t")
@@ -573,6 +734,8 @@ mod tests {
 
     use super::*;
     use crate::layout::GIB;
+
+    const SWAP_HEADER: &str = "Filename\t\t\tType\t\tSize\t\tUsed\t\tPriority\n";
 
     struct Fixture {
         root: PathBuf,
@@ -596,6 +759,7 @@ mod tests {
                 dev_root: self.root.join("dev"),
                 dev_disk_by_id: self.root.join("dev/disk/by-id"),
                 mountinfo: self.root.join("proc/self/mountinfo"),
+                proc_swaps: self.root.join("proc/swaps"),
             }
         }
 
@@ -636,6 +800,8 @@ mod tests {
         fixture.write("sys/block/sdz/sdz1/partition", "1\n");
         fixture.write("sys/block/sdz/sdz1/dev", "8:1\n");
         fixture.write("dev/sdz", "fixture device node placeholder\n");
+        fixture.write("dev/sdz1", "fixture partition node placeholder\n");
+        fixture.write("proc/swaps", SWAP_HEADER);
 
         let by_id = fixture.root.join("dev/disk/by-id");
         fs::create_dir_all(&by_id).expect("by-id directory must be creatable");
@@ -644,6 +810,23 @@ mod tests {
             by_id.join("usb-GoreeCloud_Test_USB_GCBOOT-TEST-1"),
         )
         .expect("fixture symlink must be creatable");
+    }
+
+    fn write_root_mount(fixture: &Fixture) {
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
+        );
+    }
+
+    fn write_swap_partition(fixture: &Fixture, path: &Path) {
+        fixture.write(
+            "proc/swaps",
+            &format!(
+                "{SWAP_HEADER}{}\tpartition\t1048572\t0\t-2\n",
+                path.display()
+            ),
+        );
     }
 
     fn test_disk(report: &LinuxDiscoveryReport) -> &LinuxBlockDevice {
@@ -670,10 +853,7 @@ mod tests {
     fn discovers_read_only_linux_metadata_and_persistent_identity() {
         let fixture = Fixture::new();
         create_test_disk(&fixture);
-        fixture.write(
-            "proc/self/mountinfo",
-            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
-        );
+        write_root_mount(&fixture);
 
         let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
         assert!(
@@ -693,6 +873,7 @@ mod tests {
         assert!(!device.contains_mounted_root);
         assert!(!device.contains_mounted_boot);
         assert!(!device.contains_mounted_filesystem);
+        assert!(!device.contains_active_swap);
         assert_eq!(device.diskseq, Some(42));
         assert_eq!(device.wwid.as_deref(), Some("test-wwid-1"));
         assert_eq!(device.persistent_aliases.len(), 1);
@@ -708,6 +889,7 @@ mod tests {
             ]
         );
         assert!(device.mounted_topology_device_numbers.is_empty());
+        assert!(device.active_swap_topology_device_numbers.is_empty());
         assert!(device.assessment().eligible);
 
         let token = device.revalidation_token();
@@ -789,13 +971,96 @@ mod tests {
     }
 
     #[test]
+    fn rejects_disk_when_partition_is_active_swap() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+        write_swap_partition(&fixture, &fixture.root.join("dev/sdz1"));
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(device.contains_active_swap);
+        assert_eq!(
+            device.active_swap_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 1 }]
+        );
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn rejects_disk_when_holder_is_active_swap() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+        fixture.write("sys/block/dm-0/dev", "253:0\n");
+        fixture.write("dev/dm-0", "fixture mapper node placeholder\n");
+        fixture.symlink("../../../dm-0", "sys/block/sdz/sdz1/holders/dm-0");
+        write_swap_partition(&fixture, &fixture.root.join("dev/dm-0"));
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(device.contains_active_swap);
+        assert_eq!(
+            device.active_swap_topology_device_numbers,
+            vec![DeviceNumber {
+                major: 253,
+                minor: 0
+            }]
+        );
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn associates_active_swap_file_with_its_mounted_filesystem() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        let mount_point = fixture.root.join("mnt/test");
+        let swap_file = mount_point.join("swapfile");
+        fixture.write("mnt/test/swapfile", "fixture swap file\n");
+        fixture.write(
+            "proc/self/mountinfo",
+            &format!(
+                "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 8:1 / {} rw,relatime - ext4 /dev/sdz1 rw\n",
+                mount_point.display()
+            ),
+        );
+        fixture.write(
+            "proc/swaps",
+            &format!(
+                "{SWAP_HEADER}{}\tfile\t1048572\t0\t-2\n",
+                swap_file.display()
+            ),
+        );
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(device.contains_mounted_filesystem);
+        assert!(device.contains_active_swap);
+        assert_eq!(
+            device.active_swap_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 1 }]
+        );
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn unresolved_active_swap_fails_discovery_closed() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+        write_swap_partition(&fixture, &fixture.root.join("dev/missing-swap"));
+
+        let error = discover_linux_block_devices(&fixture.paths())
+            .expect_err("unresolved active swap must fail discovery");
+        assert!(error.message.contains("No such file") || error.message.contains("not found"));
+    }
+
+    #[test]
     fn revalidation_token_changes_when_mount_state_changes() {
         let fixture = Fixture::new();
         create_test_disk(&fixture);
-        fixture.write(
-            "proc/self/mountinfo",
-            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
-        );
+        write_root_mount(&fixture);
 
         let first_report = discover_linux_block_devices(&fixture.paths())
             .expect("first fixture probe must discover");
@@ -815,9 +1080,28 @@ mod tests {
     }
 
     #[test]
-    fn decodes_mountinfo_escape_sequences() {
+    fn revalidation_token_changes_when_swap_state_changes() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        write_root_mount(&fixture);
+
+        let first_report = discover_linux_block_devices(&fixture.paths())
+            .expect("first fixture probe must discover");
+        let token = test_disk(&first_report).revalidation_token();
+
+        write_swap_partition(&fixture, &fixture.root.join("dev/sdz1"));
+        let second_report = discover_linux_block_devices(&fixture.paths())
+            .expect("second fixture probe must discover");
+        let device = test_disk(&second_report);
+
+        assert!(!token.matches(device));
+        assert!(device.contains_active_swap);
+    }
+
+    #[test]
+    fn decodes_proc_path_escape_sequences() {
         assert_eq!(
-            decode_mountinfo_field("/media/GoreeCloud\\040Boot"),
+            decode_proc_path_field("/media/GoreeCloud\\040Boot"),
             "/media/GoreeCloud Boot"
         );
     }

@@ -16,6 +16,7 @@ pub struct DeviceEvidence {
     pub contains_mounted_root: bool,
     pub contains_mounted_boot: bool,
     pub contains_mounted_filesystem: bool,
+    pub contains_active_swap: bool,
     pub read_only: bool,
 }
 
@@ -55,6 +56,9 @@ impl TargetAssessment {
         {
             reasons.push("target device topology contains a mounted filesystem");
         }
+        if evidence.contains_active_swap {
+            reasons.push("target device topology contains active swap");
+        }
         if evidence.size_bytes < MIN_DEVICE_BYTES {
             reasons.push("target is smaller than the minimum planning size");
         }
@@ -78,6 +82,7 @@ mod tests {
             contains_mounted_root: false,
             contains_mounted_boot: false,
             contains_mounted_filesystem: false,
+            contains_active_swap: false,
             read_only: false,
         }
     }
@@ -112,6 +117,20 @@ mod tests {
             result
                 .reasons
                 .contains(&"target device topology contains a mounted filesystem")
+        );
+    }
+
+    #[test]
+    fn rejects_active_swap_evidence() {
+        let mut evidence = safe_evidence();
+        evidence.contains_active_swap = true;
+
+        let result = TargetAssessment::evaluate(&evidence);
+        assert!(!result.eligible);
+        assert!(
+            result
+                .reasons
+                .contains(&"target device topology contains active swap")
         );
     }
 
