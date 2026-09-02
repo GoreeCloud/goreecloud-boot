@@ -1010,13 +1010,19 @@ mod tests {
             vec![
                 DeviceNumber { major: 8, minor: 0 },
                 DeviceNumber { major: 8, minor: 1 },
-                DeviceNumber { major: 8, minor: 17 },
+                DeviceNumber {
+                    major: 8,
+                    minor: 17
+                },
                 DeviceNumber { major: 9, minor: 0 }
             ]
         );
         assert_eq!(
             device.mounted_topology_device_numbers,
-            vec![DeviceNumber { major: 8, minor: 17 }]
+            vec![DeviceNumber {
+                major: 8,
+                minor: 17
+            }]
         );
         assert!(device.contains_mounted_filesystem);
         assert!(!device.assessment().eligible);
@@ -1035,7 +1041,10 @@ mod tests {
         assert!(device.contains_active_swap);
         assert_eq!(
             device.active_swap_topology_device_numbers,
-            vec![DeviceNumber { major: 8, minor: 17 }]
+            vec![DeviceNumber {
+                major: 8,
+                minor: 17
+            }]
         );
         assert!(!device.assessment().eligible);
     }
@@ -1187,11 +1196,10 @@ mod tests {
         let device = test_disk(&second_report);
 
         assert!(!token.matches(device));
-        assert!(
-            device
-                .topology_device_numbers
-                .contains(&DeviceNumber { major: 8, minor: 17 })
-        );
+        assert!(device.topology_device_numbers.contains(&DeviceNumber {
+            major: 8,
+            minor: 17
+        }));
     }
 
     #[test]
