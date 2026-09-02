@@ -37,10 +37,16 @@ impl Display for CatalogError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyId => write!(formatter, "catalog entry id is empty"),
-            Self::InvalidId => write!(formatter, "catalog entry id contains unsupported characters"),
+            Self::InvalidId => write!(
+                formatter,
+                "catalog entry id contains unsupported characters"
+            ),
             Self::EmptyDisplayName => write!(formatter, "catalog display name is empty"),
             Self::UnsafePath => write!(formatter, "catalog path is not a safe relative path"),
-            Self::InvalidSha256 => write!(formatter, "SHA-256 metadata must be 64 hexadecimal characters"),
+            Self::InvalidSha256 => write!(
+                formatter,
+                "SHA-256 metadata must be 64 hexadecimal characters"
+            ),
         }
     }
 }
@@ -114,7 +120,9 @@ mod tests {
             relative_path: "images/linux-rescue.iso".to_owned(),
             boot_kind: BootKind::LinuxImage,
             architecture: Architecture::X86_64,
-            sha256: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned()),
+            sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            ),
         }
     }
 

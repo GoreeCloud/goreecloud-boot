@@ -99,6 +99,10 @@ mod tests {
 
         let result = TargetAssessment::evaluate(&evidence);
         assert!(!result.eligible);
-        assert!(result.reasons.contains(&"target is not positively identified as removable"));
+        assert!(
+            result
+                .reasons
+                .contains(&"target is not positively identified as removable")
+        );
     }
 }

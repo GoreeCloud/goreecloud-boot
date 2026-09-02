@@ -47,9 +47,14 @@ pub enum LayoutError {
 impl Display for LayoutError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DeviceTooSmall => write!(formatter, "device is smaller than the minimum planning size"),
+            Self::DeviceTooSmall => write!(
+                formatter,
+                "device is smaller than the minimum planning size"
+            ),
             Self::ArithmeticOverflow => write!(formatter, "layout arithmetic overflowed"),
-            Self::NoUsableDataSpace => write!(formatter, "no usable GCDATA space remains after reserves"),
+            Self::NoUsableDataSpace => {
+                write!(formatter, "no usable GCDATA space remains after reserves")
+            }
         }
     }
 }
@@ -113,7 +118,10 @@ mod tests {
 
     #[test]
     fn rejects_devices_below_minimum() {
-        assert_eq!(plan_layout(MIN_DEVICE_BYTES - 1), Err(LayoutError::DeviceTooSmall));
+        assert_eq!(
+            plan_layout(MIN_DEVICE_BYTES - 1),
+            Err(LayoutError::DeviceTooSmall)
+        );
     }
 
     #[test]
