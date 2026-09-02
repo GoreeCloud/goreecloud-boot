@@ -12,6 +12,7 @@ use crate::{DeviceEvidence, TargetAssessment};
 const SYSFS_CAPACITY_SECTOR_BYTES: u64 = 512;
 const TOPOLOGY_RELATION_DIRS: [&str; 2] = ["holders", "slaves"];
 const INCOMPLETE_MOUNT_NAMESPACE_COVERAGE_REASON: &str = "mount namespace coverage is incomplete";
+const STACKED_STORAGE_TOPOLOGY_REASON: &str = "device participates in a stacked storage topology";
 
 /// Linux block-device major/minor identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,8 +121,22 @@ impl LinuxBlockDevice {
     }
 
     #[must_use]
+    fn participates_in_stacked_storage(&self) -> bool {
+        let mut direct_device_numbers = BTreeSet::from([self.device_number]);
+        direct_device_numbers.extend(self.partition_device_numbers.iter().copied());
+
+        self.topology_device_numbers
+            .iter()
+            .any(|device| !direct_device_numbers.contains(device))
+    }
+
+    #[must_use]
     pub fn assessment(&self) -> TargetAssessment {
         let mut assessment = TargetAssessment::evaluate(&self.evidence());
+        if self.participates_in_stacked_storage() {
+            assessment.eligible = false;
+            assessment.reasons.push(STACKED_STORAGE_TOPOLOGY_REASON);
+        }
         if !self.mount_namespace_coverage_complete {
             assessment.eligible = false;
             assessment
@@ -1089,6 +1104,7 @@ mod tests {
                 DeviceNumber { major: 8, minor: 1 }
             ]
         );
+        assert!(!device.participates_in_stacked_storage());
         assert!(device.mounted_topology_device_numbers.is_empty());
         assert!(device.active_swap_topology_device_numbers.is_empty());
         assert!(device.assessment().eligible);
@@ -1184,6 +1200,28 @@ mod tests {
             assessment
                 .reasons
                 .contains(&INCOMPLETE_MOUNT_NAMESPACE_COVERAGE_REASON)
+        );
+    }
+
+    #[test]
+    fn rejects_unmounted_disk_participating_in_stacked_storage() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        connect_test_disk_to_shared_holder(&fixture, false);
+        write_root_mount(&fixture);
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(!device.contains_mounted_filesystem);
+        assert!(!device.contains_active_swap);
+        assert!(device.participates_in_stacked_storage());
+
+        let assessment = device.assessment();
+        assert!(!assessment.eligible);
+        assert!(
+            assessment
+                .reasons
+                .contains(&STACKED_STORAGE_TOPOLOGY_REASON)
         );
     }
 
