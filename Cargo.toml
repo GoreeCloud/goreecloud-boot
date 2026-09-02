@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/bootctl",
+    "crates/gcboot-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-dev.2"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/GoreeCloud/goreecloud-boot"
+authors = ["GoreeCloud"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
