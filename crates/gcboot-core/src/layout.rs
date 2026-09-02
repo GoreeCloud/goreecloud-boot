@@ -90,7 +90,10 @@ impl Display for LayoutError {
                 "logical block size must be a power of two between 512 bytes and 1 MiB and divide the 1 MiB alignment"
             ),
             Self::DeviceSizeNotBlockAligned => {
-                write!(formatter, "device size is not aligned to its logical block size")
+                write!(
+                    formatter,
+                    "device size is not aligned to its logical block size"
+                )
             }
             Self::PartitionBoundaryNotBlockAligned => write!(
                 formatter,
@@ -250,8 +253,8 @@ mod tests {
 
     #[test]
     fn creates_sector_layout_for_4096_byte_blocks() {
-        let layout =
-            plan_sector_layout(MIN_DEVICE_BYTES, 4096).expect("4096-byte sectors must be supported");
+        let layout = plan_sector_layout(MIN_DEVICE_BYTES, 4096)
+            .expect("4096-byte sectors must be supported");
 
         assert_eq!(layout.gcboot.first_lba, MIB / 4096);
         assert_eq!(layout.gcboot.block_count(), GCBOOT_SIZE_BYTES / 4096);

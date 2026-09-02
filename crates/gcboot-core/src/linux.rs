@@ -20,10 +20,7 @@ pub struct DeviceNumber {
 
 impl DeviceNumber {
     pub fn parse(value: &str) -> Result<Self, DeviceNumberParseError> {
-        let (major, minor) = value
-            .trim()
-            .split_once(':')
-            .ok_or(DeviceNumberParseError)?;
+        let (major, minor) = value.trim().split_once(':').ok_or(DeviceNumberParseError)?;
 
         Ok(Self {
             major: major.parse::<u32>().map_err(|_| DeviceNumberParseError)?,
@@ -286,7 +283,10 @@ fn discover_one(
     family.extend(partition_device_numbers.iter().copied());
 
     let contains_mounted_root = family.contains(&mounts.root_device);
-    let contains_mounted_boot = mounts.boot_devices.iter().any(|device| family.contains(device));
+    let contains_mounted_boot = mounts
+        .boot_devices
+        .iter()
+        .any(|device| family.contains(device));
     let devnode = paths.dev_root.join(kernel_name);
     let persistent_aliases = collect_persistent_aliases(paths, &devnode, warnings);
 
@@ -314,7 +314,8 @@ fn discover_one(
 fn discover_partition_device_numbers(
     sys_device: &Path,
 ) -> Result<Vec<DeviceNumber>, LinuxDiscoveryError> {
-    let entries = fs::read_dir(sys_device).map_err(|error| LinuxDiscoveryError::io(sys_device, &error))?;
+    let entries =
+        fs::read_dir(sys_device).map_err(|error| LinuxDiscoveryError::io(sys_device, &error))?;
     let mut partitions = Vec::new();
 
     for entry in entries {
@@ -509,7 +510,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock must be after Unix epoch")
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!("gcboot-linux-test-{}-{nonce}", std::process::id()));
+            let root = std::env::temp_dir()
+                .join(format!("gcboot-linux-test-{}-{nonce}", std::process::id()));
             fs::create_dir_all(&root).expect("fixture root must be creatable");
             Self { root }
         }
@@ -556,8 +558,11 @@ mod tests {
 
         let by_id = fixture.root.join("dev/disk/by-id");
         fs::create_dir_all(&by_id).expect("by-id directory must be creatable");
-        symlink("../../sdz", by_id.join("usb-GoreeCloud_Test_USB_GCBOOT-TEST-1"))
-            .expect("fixture symlink must be creatable");
+        symlink(
+            "../../sdz",
+            by_id.join("usb-GoreeCloud_Test_USB_GCBOOT-TEST-1"),
+        )
+        .expect("fixture symlink must be creatable");
     }
 
     #[test]
@@ -582,7 +587,11 @@ mod tests {
         );
 
         let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
-        assert!(report.warnings.is_empty(), "warnings: {:?}", report.warnings);
+        assert!(
+            report.warnings.is_empty(),
+            "warnings: {:?}",
+            report.warnings
+        );
         assert_eq!(report.devices.len(), 1);
 
         let device = &report.devices[0];
@@ -597,7 +606,10 @@ mod tests {
         assert_eq!(device.diskseq, Some(42));
         assert_eq!(device.wwid.as_deref(), Some("test-wwid-1"));
         assert_eq!(device.persistent_aliases.len(), 1);
-        assert_eq!(device.persistent_identity().as_deref(), Some("wwid:test-wwid-1"));
+        assert_eq!(
+            device.persistent_identity().as_deref(),
+            Some("wwid:test-wwid-1")
+        );
         assert!(device.assessment().eligible);
 
         let token = device.revalidation_token();

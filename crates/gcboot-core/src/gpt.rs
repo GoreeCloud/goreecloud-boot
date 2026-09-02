@@ -148,10 +148,16 @@ impl std::fmt::Display for GptError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::LogicalBlockTooSmall => {
-                write!(formatter, "GPT logical block size must be at least 512 bytes")
+                write!(
+                    formatter,
+                    "GPT logical block size must be at least 512 bytes"
+                )
             }
             Self::DeviceTooSmallForGpt => {
-                write!(formatter, "device geometry is too small for redundant GPT metadata")
+                write!(
+                    formatter,
+                    "device geometry is too small for redundant GPT metadata"
+                )
             }
             Self::ArithmeticOverflow => write!(formatter, "GPT arithmetic overflowed"),
             Self::PartitionOutsideUsableRange => {
@@ -177,8 +183,8 @@ pub fn build_gpt_metadata(
         return Err(GptError::LogicalBlockTooSmall);
     }
 
-    let block_size = usize::try_from(layout.logical_block_size)
-        .map_err(|_| GptError::ArithmeticOverflow)?;
+    let block_size =
+        usize::try_from(layout.logical_block_size).map_err(|_| GptError::ArithmeticOverflow)?;
     let entry_bytes = u64::from(GPT_PARTITION_ENTRY_COUNT)
         .checked_mul(u64::from(GPT_PARTITION_ENTRY_SIZE))
         .ok_or(GptError::ArithmeticOverflow)?;
@@ -206,7 +212,8 @@ pub fn build_gpt_metadata(
         return Err(GptError::PartitionOverlap);
     }
 
-    let entry_bytes_usize = usize::try_from(entry_bytes).map_err(|_| GptError::ArithmeticOverflow)?;
+    let entry_bytes_usize =
+        usize::try_from(entry_bytes).map_err(|_| GptError::ArithmeticOverflow)?;
     let padded_entry_bytes = entry_lbas
         .checked_mul(layout.logical_block_size)
         .ok_or(GptError::ArithmeticOverflow)?;
@@ -314,8 +321,8 @@ fn write_partition_entry(
     partition_type: GptGuid,
     unique_guid: GptGuid,
 ) -> Result<(), GptError> {
-    let entry_size = usize::try_from(GPT_PARTITION_ENTRY_SIZE)
-        .map_err(|_| GptError::ArithmeticOverflow)?;
+    let entry_size =
+        usize::try_from(GPT_PARTITION_ENTRY_SIZE).map_err(|_| GptError::ArithmeticOverflow)?;
     let offset = index
         .checked_mul(entry_size)
         .ok_or(GptError::ArithmeticOverflow)?;
@@ -401,11 +408,8 @@ fn build_protective_mbr(block_size: usize, total_lbas: u64) -> Result<Vec<u8>, G
     record[5..8].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
     record[8..12].copy_from_slice(&1_u32.to_le_bytes());
 
-    let protected_lbas = total_lbas
-        .saturating_sub(1)
-        .min(u64::from(u32::MAX));
-    let protected_lbas =
-        u32::try_from(protected_lbas).map_err(|_| GptError::ArithmeticOverflow)?;
+    let protected_lbas = total_lbas.saturating_sub(1).min(u64::from(u32::MAX));
+    let protected_lbas = u32::try_from(protected_lbas).map_err(|_| GptError::ArithmeticOverflow)?;
     record[12..16].copy_from_slice(&protected_lbas.to_le_bytes());
     mbr[510] = 0x55;
     mbr[511] = 0xAA;
@@ -499,8 +503,14 @@ mod tests {
             u64::from(GPT_PARTITION_ENTRY_COUNT) * u64::from(GPT_PARTITION_ENTRY_SIZE),
         )
         .expect("entry array must fit in memory");
-        assert_eq!(read_u32(&primary.data, 88), crc32(&entries.data[..entry_bytes]));
-        assert_eq!(&entries.data[0..16], &EFI_SYSTEM_PARTITION_TYPE.to_disk_bytes());
+        assert_eq!(
+            read_u32(&primary.data, 88),
+            crc32(&entries.data[..entry_bytes])
+        );
+        assert_eq!(
+            &entries.data[0..16],
+            &EFI_SYSTEM_PARTITION_TYPE.to_disk_bytes()
+        );
         assert_eq!(read_u64(&entries.data, 32), layout.gcboot.first_lba);
         assert_eq!(read_u64(&entries.data, 40), layout.gcboot.last_lba);
 
@@ -510,8 +520,14 @@ mod tests {
             &entries.data[second_entry..second_entry + 16],
             &BASIC_DATA_PARTITION_TYPE.to_disk_bytes()
         );
-        assert_eq!(read_u64(&entries.data, second_entry + 32), layout.gcdata.first_lba);
-        assert_eq!(read_u64(&entries.data, second_entry + 40), layout.gcdata.last_lba);
+        assert_eq!(
+            read_u64(&entries.data, second_entry + 32),
+            layout.gcdata.first_lba
+        );
+        assert_eq!(
+            read_u64(&entries.data, second_entry + 40),
+            layout.gcdata.last_lba
+        );
 
         let backup_offset = (layout.total_lbas - 1) * 512;
         let backup = write_at(&image, backup_offset);

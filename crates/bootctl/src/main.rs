@@ -162,10 +162,7 @@ fn plan_linux_device(arguments: Vec<String>) -> Result<(), String> {
     println!("sector-aware plan:");
     print_sector_partition(&sector_layout.gcboot, sector_layout.logical_block_size);
     print_sector_partition(&sector_layout.gcdata, sector_layout.logical_block_size);
-    println!(
-        "revalidation token: {:?}",
-        device.revalidation_token()
-    );
+    println!("revalidation token: {:?}", device.revalidation_token());
     println!("note: no device node was opened for writing");
 
     Ok(())
@@ -258,8 +255,12 @@ fn validate_test_image_output(output: &Path) -> Result<(), String> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|error| format!("could not resolve output parent {}: {error}", parent.display()))?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "could not resolve output parent {}: {error}",
+            parent.display()
+        )
+    })?;
 
     for blocked in [Path::new("/dev"), Path::new("/sys"), Path::new("/proc")] {
         if canonical_parent == blocked || canonical_parent.starts_with(blocked) {
@@ -281,11 +282,20 @@ fn print_linux_device(device: &LinuxBlockDevice) {
     println!("  device number: {}", device.device_number);
     println!("  capacity: {} bytes", device.size_bytes);
     println!("  logical block size: {} bytes", device.logical_block_size);
-    println!("  physical block size: {} bytes", device.physical_block_size);
+    println!(
+        "  physical block size: {} bytes",
+        device.physical_block_size
+    );
     println!("  removable: {}", yes_no(device.removable));
     println!("  read-only: {}", yes_no(device.read_only));
-    println!("  contains mounted root: {}", yes_no(device.contains_mounted_root));
-    println!("  contains mounted boot: {}", yes_no(device.contains_mounted_boot));
+    println!(
+        "  contains mounted root: {}",
+        yes_no(device.contains_mounted_root)
+    );
+    println!(
+        "  contains mounted boot: {}",
+        yes_no(device.contains_mounted_boot)
+    );
     println!("  diskseq: {}", optional_u64(device.diskseq));
     println!("  vendor: {}", optional_text(device.vendor.as_deref()));
     println!("  model: {}", optional_text(device.model.as_deref()));
