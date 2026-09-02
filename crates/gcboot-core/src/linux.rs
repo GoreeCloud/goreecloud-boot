@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -76,6 +76,8 @@ pub struct LinuxBlockDevice {
     pub devnode: PathBuf,
     pub device_number: DeviceNumber,
     pub partition_device_numbers: Vec<DeviceNumber>,
+    pub topology_device_numbers: Vec<DeviceNumber>,
+    pub mounted_topology_device_numbers: Vec<DeviceNumber>,
     pub size_bytes: u64,
     pub logical_block_size: u64,
     pub physical_block_size: u64,
@@ -83,6 +85,7 @@ pub struct LinuxBlockDevice {
     pub read_only: bool,
     pub contains_mounted_root: bool,
     pub contains_mounted_boot: bool,
+    pub contains_mounted_filesystem: bool,
     pub diskseq: Option<u64>,
     pub vendor: Option<String>,
     pub model: Option<String>,
@@ -100,6 +103,7 @@ impl LinuxBlockDevice {
             removable: self.removable,
             contains_mounted_root: self.contains_mounted_root,
             contains_mounted_boot: self.contains_mounted_boot,
+            contains_mounted_filesystem: self.contains_mounted_filesystem,
             read_only: self.read_only,
         }
     }
@@ -130,13 +134,18 @@ impl LinuxBlockDevice {
             diskseq: self.diskseq,
             size_bytes: self.size_bytes,
             logical_block_size: self.logical_block_size,
+            removable: self.removable,
+            read_only: self.read_only,
             persistent_identity: self.persistent_identity(),
             serial: self.serial.clone(),
+            topology_device_numbers: self.topology_device_numbers.clone(),
+            mounted_topology_device_numbers: self.mounted_topology_device_numbers.clone(),
         }
     }
 }
 
-/// A snapshot used to detect path reuse or device replacement between probes.
+/// A snapshot used to detect path reuse, device replacement, or relevant
+/// topology/mount-state changes between probes.
 ///
 /// A matching token is necessary evidence for a future destructive workflow,
 /// but the current project does not treat it as sufficient authorization.
@@ -146,8 +155,12 @@ pub struct LinuxRevalidationToken {
     pub diskseq: Option<u64>,
     pub size_bytes: u64,
     pub logical_block_size: u64,
+    pub removable: bool,
+    pub read_only: bool,
     pub persistent_identity: Option<String>,
     pub serial: Option<String>,
+    pub topology_device_numbers: Vec<DeviceNumber>,
+    pub mounted_topology_device_numbers: Vec<DeviceNumber>,
 }
 
 impl LinuxRevalidationToken {
@@ -198,16 +211,23 @@ impl Error for LinuxDiscoveryError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SystemMounts {
+    mounted_devices: BTreeSet<DeviceNumber>,
     root_device: DeviceNumber,
     boot_devices: BTreeSet<DeviceNumber>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartitionDevice {
+    path: PathBuf,
+    device_number: DeviceNumber,
 }
 
 /// Discover whole Linux block devices using read-only sysfs, mountinfo, and
 /// persistent-device alias metadata.
 ///
-/// The function never opens a block-device node. A per-device metadata failure
-/// causes that device to be omitted and reported as a warning so incomplete
-/// evidence cannot accidentally become an eligible target.
+/// The function never opens a block-device node. A per-device metadata or
+/// topology failure causes that device to be omitted and reported as a warning
+/// so incomplete evidence cannot accidentally become an eligible target.
 pub fn discover_linux_block_devices(
     paths: &LinuxProbePaths,
 ) -> Result<LinuxDiscoveryReport, LinuxDiscoveryError> {
@@ -276,17 +296,29 @@ fn discover_one(
     let physical_block_size = read_u64(&sys_device.join("queue/physical_block_size"))?;
     let removable = read_bool(&sys_device.join("removable"))?;
     let read_only = read_bool(&sys_device.join("ro"))?;
-    let partition_device_numbers = discover_partition_device_numbers(sys_device)?;
+    let partitions = discover_partitions(sys_device)?;
+    let partition_device_numbers = partitions
+        .iter()
+        .map(|partition| partition.device_number)
+        .collect();
 
-    let mut family = BTreeSet::new();
-    family.insert(device_number);
-    family.extend(partition_device_numbers.iter().copied());
+    let mut topology_roots = Vec::with_capacity(partitions.len() + 1);
+    topology_roots.push(sys_device.to_path_buf());
+    topology_roots.extend(partitions.iter().map(|partition| partition.path.clone()));
+    let topology_device_numbers = collect_topology_device_numbers(&topology_roots)?;
+    let topology_set: BTreeSet<DeviceNumber> = topology_device_numbers.iter().copied().collect();
+    let mounted_topology_device_numbers = mounts
+        .mounted_devices
+        .intersection(&topology_set)
+        .copied()
+        .collect::<Vec<_>>();
 
-    let contains_mounted_root = family.contains(&mounts.root_device);
+    let contains_mounted_root = topology_set.contains(&mounts.root_device);
     let contains_mounted_boot = mounts
         .boot_devices
         .iter()
-        .any(|device| family.contains(device));
+        .any(|device| topology_set.contains(device));
+    let contains_mounted_filesystem = !mounted_topology_device_numbers.is_empty();
     let devnode = paths.dev_root.join(kernel_name);
     let persistent_aliases = collect_persistent_aliases(paths, &devnode, warnings);
 
@@ -295,6 +327,8 @@ fn discover_one(
         devnode,
         device_number,
         partition_device_numbers,
+        topology_device_numbers,
+        mounted_topology_device_numbers,
         size_bytes,
         logical_block_size,
         physical_block_size,
@@ -302,6 +336,7 @@ fn discover_one(
         read_only,
         contains_mounted_root,
         contains_mounted_boot,
+        contains_mounted_filesystem,
         diskseq: read_optional_u64(&sys_device.join("diskseq"), warnings),
         vendor: read_optional_text(&sys_device.join("device/vendor"), warnings),
         model: read_optional_text(&sys_device.join("device/model"), warnings),
@@ -311,9 +346,7 @@ fn discover_one(
     })
 }
 
-fn discover_partition_device_numbers(
-    sys_device: &Path,
-) -> Result<Vec<DeviceNumber>, LinuxDiscoveryError> {
+fn discover_partitions(sys_device: &Path) -> Result<Vec<PartitionDevice>, LinuxDiscoveryError> {
     let entries =
         fs::read_dir(sys_device).map_err(|error| LinuxDiscoveryError::io(sys_device, &error))?;
     let mut partitions = Vec::new();
@@ -325,12 +358,50 @@ fn discover_partition_device_numbers(
             continue;
         }
 
-        partitions.push(read_device_number(&path.join("dev"))?);
+        partitions.push(PartitionDevice {
+            device_number: read_device_number(&path.join("dev"))?,
+            path,
+        });
     }
 
-    partitions.sort();
-    partitions.dedup();
+    partitions.sort_by_key(|partition| partition.device_number);
+    partitions.dedup_by_key(|partition| partition.device_number);
     Ok(partitions)
+}
+
+fn collect_topology_device_numbers(
+    roots: &[PathBuf],
+) -> Result<Vec<DeviceNumber>, LinuxDiscoveryError> {
+    let mut queue: VecDeque<PathBuf> = roots.iter().cloned().collect();
+    let mut visited_paths = BTreeSet::new();
+    let mut device_numbers = BTreeSet::new();
+
+    while let Some(path) = queue.pop_front() {
+        let canonical_path =
+            fs::canonicalize(&path).map_err(|error| LinuxDiscoveryError::io(&path, &error))?;
+        if !visited_paths.insert(canonical_path.clone()) {
+            continue;
+        }
+
+        device_numbers.insert(read_device_number(&canonical_path.join("dev"))?);
+
+        let holders_path = canonical_path.join("holders");
+        let holders = match fs::read_dir(&holders_path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(LinuxDiscoveryError::io(&holders_path, &error)),
+        };
+
+        for holder in holders {
+            let holder = holder.map_err(|error| LinuxDiscoveryError::io(&holders_path, &error))?;
+            let holder_path = holder.path();
+            let canonical_holder = fs::canonicalize(&holder_path)
+                .map_err(|error| LinuxDiscoveryError::io(&holder_path, &error))?;
+            queue.push_back(canonical_holder);
+        }
+    }
+
+    Ok(device_numbers.into_iter().collect())
 }
 
 fn collect_persistent_aliases(
@@ -449,6 +520,7 @@ fn read_optional_u64(path: &Path, warnings: &mut Vec<DiscoveryWarning>) -> Optio
 }
 
 fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
+    let mut mounted_devices = BTreeSet::new();
     let mut root_device = None;
     let mut boot_devices = BTreeSet::new();
 
@@ -468,6 +540,7 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
             )
         })?;
         let mount_point = decode_mountinfo_field(fields[4]);
+        mounted_devices.insert(device);
 
         if mount_point == "/" {
             root_device = Some(device);
@@ -478,6 +551,7 @@ fn parse_system_mounts(mountinfo: &str) -> Result<SystemMounts, String> {
     }
 
     Ok(SystemMounts {
+        mounted_devices,
         root_device: root_device
             .ok_or_else(|| "mountinfo does not identify the mounted root filesystem".to_owned())?,
         boot_devices,
@@ -531,6 +605,13 @@ mod tests {
                 .expect("fixture directory must be creatable");
             fs::write(path, value).expect("fixture file must be writable");
         }
+
+        fn symlink(&self, target: &str, relative: &str) {
+            let path = self.root.join(relative);
+            fs::create_dir_all(path.parent().expect("fixture path must have a parent"))
+                .expect("fixture directory must be creatable");
+            symlink(target, path).expect("fixture symlink must be creatable");
+        }
     }
 
     impl Drop for Fixture {
@@ -565,6 +646,14 @@ mod tests {
         .expect("fixture symlink must be creatable");
     }
 
+    fn test_disk(report: &LinuxDiscoveryReport) -> &LinuxBlockDevice {
+        report
+            .devices
+            .iter()
+            .find(|device| device.kernel_name == "sdz")
+            .expect("test disk must be discovered")
+    }
+
     #[test]
     fn parses_device_numbers() {
         assert_eq!(
@@ -594,7 +683,7 @@ mod tests {
         );
         assert_eq!(report.devices.len(), 1);
 
-        let device = &report.devices[0];
+        let device = test_disk(&report);
         assert_eq!(device.kernel_name, "sdz");
         assert_eq!(device.size_bytes, 16 * GIB);
         assert_eq!(device.logical_block_size, 512);
@@ -603,6 +692,7 @@ mod tests {
         assert!(!device.read_only);
         assert!(!device.contains_mounted_root);
         assert!(!device.contains_mounted_boot);
+        assert!(!device.contains_mounted_filesystem);
         assert_eq!(device.diskseq, Some(42));
         assert_eq!(device.wwid.as_deref(), Some("test-wwid-1"));
         assert_eq!(device.persistent_aliases.len(), 1);
@@ -610,6 +700,14 @@ mod tests {
             device.persistent_identity().as_deref(),
             Some("wwid:test-wwid-1")
         );
+        assert_eq!(
+            device.topology_device_numbers,
+            vec![
+                DeviceNumber { major: 8, minor: 0 },
+                DeviceNumber { major: 8, minor: 1 }
+            ]
+        );
+        assert!(device.mounted_topology_device_numbers.is_empty());
         assert!(device.assessment().eligible);
 
         let token = device.revalidation_token();
@@ -626,9 +724,94 @@ mod tests {
         );
 
         let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
-        let device = &report.devices[0];
+        let device = test_disk(&report);
         assert!(device.contains_mounted_root);
+        assert!(device.contains_mounted_filesystem);
         assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn rejects_disk_when_non_boot_filesystem_is_mounted_from_its_partition() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 8:1 / /media/test rw,relatime - ext4 /dev/sdz1 rw\n",
+        );
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert!(!device.contains_mounted_root);
+        assert!(!device.contains_mounted_boot);
+        assert!(device.contains_mounted_filesystem);
+        assert_eq!(
+            device.mounted_topology_device_numbers,
+            vec![DeviceNumber { major: 8, minor: 1 }]
+        );
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn rejects_disk_when_recursive_holder_topology_is_mounted() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        fixture.write("sys/block/dm-0/dev", "253:0\n");
+        fixture.write("sys/block/md0/dev", "9:0\n");
+        fixture.symlink("../../../dm-0", "sys/block/sdz/sdz1/holders/dm-0");
+        fixture.symlink("../../md0", "sys/block/dm-0/holders/md0");
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 9:0 / /srv/storage rw,relatime - ext4 /dev/md0 rw\n",
+        );
+
+        let report = discover_linux_block_devices(&fixture.paths()).expect("fixture must discover");
+        let device = test_disk(&report);
+        assert_eq!(
+            device.topology_device_numbers,
+            vec![
+                DeviceNumber { major: 8, minor: 0 },
+                DeviceNumber { major: 8, minor: 1 },
+                DeviceNumber { major: 9, minor: 0 },
+                DeviceNumber {
+                    major: 253,
+                    minor: 0
+                }
+            ]
+        );
+        assert_eq!(
+            device.mounted_topology_device_numbers,
+            vec![DeviceNumber { major: 9, minor: 0 }]
+        );
+        assert!(device.contains_mounted_filesystem);
+        assert!(!device.assessment().eligible);
+    }
+
+    #[test]
+    fn revalidation_token_changes_when_mount_state_changes() {
+        let fixture = Fixture::new();
+        create_test_disk(&fixture);
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n",
+        );
+
+        let first_report =
+            discover_linux_block_devices(&fixture.paths()).expect("first fixture probe must discover");
+        let token = test_disk(&first_report).revalidation_token();
+
+        fixture.write(
+            "proc/self/mountinfo",
+            "36 25 259:2 / / rw,relatime - ext4 /dev/nvme0n1p2 rw\n\
+37 25 8:1 / /media/test rw,relatime - ext4 /dev/sdz1 rw\n",
+        );
+        let second_report = discover_linux_block_devices(&fixture.paths())
+            .expect("second fixture probe must discover");
+        let device = test_disk(&second_report);
+
+        assert!(!token.matches(device));
+        assert!(device.contains_mounted_filesystem);
     }
 
     #[test]

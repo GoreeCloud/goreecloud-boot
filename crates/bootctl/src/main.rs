@@ -13,7 +13,8 @@ use gcboot_core::{
 };
 #[cfg(target_os = "linux")]
 use gcboot_core::{
-    LinuxBlockDevice, LinuxDiscoveryReport, LinuxProbePaths, discover_linux_block_devices,
+    DeviceNumber, LinuxBlockDevice, LinuxDiscoveryReport, LinuxProbePaths,
+    discover_linux_block_devices,
 };
 
 fn main() -> ExitCode {
@@ -55,6 +56,7 @@ fn plan_device(arguments: Vec<String>) -> Result<(), String> {
             "removable",
             "root-mounted",
             "boot-mounted",
+            "filesystem-mounted",
             "read-only",
         ],
     )?;
@@ -65,6 +67,10 @@ fn plan_device(arguments: Vec<String>) -> Result<(), String> {
         removable: parse_yes_no(required(&options, "removable")?, "removable")?,
         contains_mounted_root: parse_yes_no(required(&options, "root-mounted")?, "root-mounted")?,
         contains_mounted_boot: parse_yes_no(required(&options, "boot-mounted")?, "boot-mounted")?,
+        contains_mounted_filesystem: parse_yes_no(
+            required(&options, "filesystem-mounted")?,
+            "filesystem-mounted",
+        )?,
         read_only: parse_yes_no(required(&options, "read-only")?, "read-only")?,
     };
 
@@ -289,12 +295,24 @@ fn print_linux_device(device: &LinuxBlockDevice) {
     println!("  removable: {}", yes_no(device.removable));
     println!("  read-only: {}", yes_no(device.read_only));
     println!(
+        "  contains mounted filesystem: {}",
+        yes_no(device.contains_mounted_filesystem)
+    );
+    println!(
         "  contains mounted root: {}",
         yes_no(device.contains_mounted_root)
     );
     println!(
         "  contains mounted boot: {}",
         yes_no(device.contains_mounted_boot)
+    );
+    println!(
+        "  topology device numbers: {}",
+        format_device_numbers(&device.topology_device_numbers)
+    );
+    println!(
+        "  mounted topology device numbers: {}",
+        format_device_numbers(&device.mounted_topology_device_numbers)
     );
     println!("  diskseq: {}", optional_u64(device.diskseq));
     println!("  vendor: {}", optional_text(device.vendor.as_deref()));
@@ -318,6 +336,19 @@ fn print_linux_device(device: &LinuxBlockDevice) {
             println!("  reject: {reason}");
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn format_device_numbers(numbers: &[DeviceNumber]) -> String {
+    if numbers.is_empty() {
+        return "none".to_owned();
+    }
+
+    numbers
+        .iter()
+        .map(|number| number.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(target_os = "linux")]
@@ -439,7 +470,8 @@ GoreeCloud Boot development CLI
 USAGE:
   bootctl version
   bootctl plan-device --device PATH --size-bytes BYTES \\
-    --removable yes|no --root-mounted yes|no --boot-mounted yes|no --read-only yes|no
+    --removable yes|no --root-mounted yes|no --boot-mounted yes|no \\
+    --filesystem-mounted yes|no --read-only yes|no
   bootctl list-linux-devices
   bootctl plan-linux-device --device PATH
   bootctl create-test-gpt-image --output PATH --size-bytes BYTES \\
@@ -447,8 +479,8 @@ USAGE:
 
 SAFETY:
   plan-device evaluates caller-supplied development evidence only.
-  list-linux-devices and plan-linux-device read Linux sysfs/mount metadata but do not open a
-  block-device node for writing.
+  list-linux-devices and plan-linux-device read Linux sysfs/mount metadata, including recursive
+  holder topology, but do not open a block-device node for writing.
   create-test-gpt-image creates a new sparse regular file only, refuses existing output paths,
   and refuses output under /dev, /sys, or /proc.
   None of these commands authorize or perform physical removable-media provisioning."

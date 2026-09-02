@@ -15,6 +15,7 @@ pub struct DeviceEvidence {
     pub removable: bool,
     pub contains_mounted_root: bool,
     pub contains_mounted_boot: bool,
+    pub contains_mounted_filesystem: bool,
     pub read_only: bool,
 }
 
@@ -48,6 +49,12 @@ impl TargetAssessment {
         if evidence.contains_mounted_boot {
             reasons.push("target contains the mounted boot filesystem");
         }
+        if evidence.contains_mounted_filesystem
+            && !evidence.contains_mounted_root
+            && !evidence.contains_mounted_boot
+        {
+            reasons.push("target device topology contains a mounted filesystem");
+        }
         if evidence.size_bytes < MIN_DEVICE_BYTES {
             reasons.push("target is smaller than the minimum planning size");
         }
@@ -70,6 +77,7 @@ mod tests {
             removable: true,
             contains_mounted_root: false,
             contains_mounted_boot: false,
+            contains_mounted_filesystem: false,
             read_only: false,
         }
     }
@@ -86,10 +94,25 @@ mod tests {
         let mut evidence = safe_evidence();
         evidence.contains_mounted_root = true;
         evidence.contains_mounted_boot = true;
+        evidence.contains_mounted_filesystem = true;
 
         let result = TargetAssessment::evaluate(&evidence);
         assert!(!result.eligible);
         assert_eq!(result.reasons.len(), 2);
+    }
+
+    #[test]
+    fn rejects_other_mounted_filesystem_evidence() {
+        let mut evidence = safe_evidence();
+        evidence.contains_mounted_filesystem = true;
+
+        let result = TargetAssessment::evaluate(&evidence);
+        assert!(!result.eligible);
+        assert!(
+            result
+                .reasons
+                .contains(&"target device topology contains a mounted filesystem")
+        );
     }
 
     #[test]
