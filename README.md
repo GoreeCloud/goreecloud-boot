@@ -9,15 +9,16 @@ GoreeCloud Boot is a native open-source multiboot USB platform under active deve
 The current foundation provides:
 
 - a dependency-free Rust workspace for host-side safety, discovery, layout, GPT metadata, catalog logic, and `bootctl`;
-- read-only Linux whole-block-device discovery from sysfs, mount metadata, active-swap metadata, and persistent `by-id` aliases where available;
+- read-only Linux whole-block-device discovery from sysfs, visible mount-namespace metadata, active-swap metadata, and persistent `by-id` aliases where available;
 - bounded bidirectional Linux storage-topology closure through sysfs `holders` and `slaves` links, starting from each whole device and its directly enumerated partitions;
-- conservative target assessment that rejects non-removable, read-only, undersized, currently mounted, or active-swap device topologies, including related backing members discovered through shared stacked devices;
-- device revalidation tokens incorporating current Linux identity, removable/read-only state, discovered topology, mounted-topology intersection, active-swap topology intersection, `diskseq`, capacity, logical block size, and available persistent identity data;
+- visible mount-namespace discovery that unions mount evidence from distinct readable namespaces exposed through the caller-visible `/proc`, records namespace identities, and makes every candidate ineligible when visible namespace coverage is incomplete;
+- conservative target assessment that rejects non-removable, read-only, undersized, currently mounted, active-swap, or incomplete-visible-namespace-evidence device topologies, including related backing members discovered through shared stacked devices;
+- device revalidation tokens incorporating current Linux identity, removable/read-only state, discovered topology, mounted-topology intersection, active-swap topology intersection, visible mount-namespace identities/coverage, `diskseq`, capacity, logical block size, and available persistent identity data;
 - deterministic byte and sector planning for the future `GCBOOT` and `GCDATA` layout;
 - in-memory protective-MBR and redundant GPT metadata generation for 512-byte and 4096-byte logical-block test geometries;
 - a development command that writes generated GPT metadata only to a **new sparse regular file**, then reads it back for verification;
 - validation for initial catalog-entry identifiers, relative image paths, architecture, boot kind, and optional SHA-256 metadata;
-- unit and synthetic-fixture tests for the implemented safety, Linux discovery/topology/swap handling, layout, GPT, and catalog rules.
+- unit and synthetic-fixture tests for the implemented safety, Linux discovery/topology/mount-namespace/swap handling, layout, GPT, and catalog rules.
 
 See [CAPABILITIES.md](CAPABILITIES.md) for the canonical current-state capability inventory.
 
@@ -53,9 +54,11 @@ Provisioning removable media is inherently destructive. Wrong-disk prevention is
 
 The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. For each candidate it starts with the whole device and direct partitions, recursively follows both sysfs `holders` and `slaves` links, canonicalizes each discovered node, and uses cycle protection to form a bounded connected topology. This allows a shared holder such as an array or mapper-style device to bring its other backing members into the same safety evidence. Any non-`NotFound` failure while reading a required `holders` or `slaves` relation causes the affected candidate to be omitted rather than assumed safe.
 
-The resulting topology is compared with all devices represented in `/proc/self/mountinfo`. The implementation also reads `/proc/swaps`, resolves active swap partitions to sysfs major/minor identities, resolves active swap files to the deepest containing mountinfo filesystem, and rejects a candidate when active swap intersects its discovered topology. Unreadable, malformed, unsupported, or unresolvable global active-swap evidence fails Linux discovery rather than permitting targets from incomplete safety evidence.
+Mount safety no longer assumes `/proc/self/mountinfo` represents every visible mount. Discovery reads the current namespace and enumerates caller-visible numeric process entries under `/proc`, deduplicates their mount namespaces by `/proc/<pid>/ns/mnt` identity, and unions mount evidence from each distinct namespace whose `/proc/<pid>/mountinfo` can be read and parsed. A mount in another visible namespace can therefore reject a candidate. If a visible namespace cannot be safely inspected, discovery retains read-only inspection output but marks namespace coverage incomplete, causing every candidate assessment to be ineligible. This is deliberately fail-conservative; it does not prove that namespaces hidden from or inaccessible through the caller’s `/proc` do not exist.
 
-These controls are still a bounded development model. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespace visibility, unusual storage configurations, and other Linux storage relationships are not yet exhaustively qualified for destructive use.
+The implementation also reads `/proc/swaps`, resolves active swap partitions to sysfs major/minor identities, and resolves active swap files against the deepest containing mount information. If visible namespace evidence gives an active swap file ambiguous deepest backing filesystems, Linux discovery fails closed. A candidate is rejected when resolved active swap intersects its discovered topology. Unreadable, malformed, unsupported, or unresolvable global active-swap evidence also fails Linux discovery rather than permitting targets from incomplete safety evidence.
+
+These controls are still a bounded development model. Device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, namespace visibility constraints, unusual storage configurations, and other Linux storage relationships are not yet exhaustively qualified for destructive use.
 
 The GPT development path writes only to a newly created regular sparse file and refuses existing output paths and output beneath `/dev`, `/sys`, or `/proc`.
 
@@ -64,10 +67,10 @@ Future physical provisioning must, at minimum:
 1. discover the requested target from platform evidence rather than trusting a mutable path alone;
 2. reject active system-storage relationships, including mounted filesystems and swap, by default;
 3. require removable-media evidence;
-4. display stable identity, current-instance identity, geometry, topology, and capacity;
+4. display stable identity, current-instance identity, geometry, topology, active-use and namespace-coverage evidence, and capacity;
 5. require explicit destructive authorization;
-6. revalidate device identity and all required topology/active-use evidence immediately before writes;
-7. fail safely if device identity, topology, mount state, swap state, or other critical safety evidence changes; and
+6. revalidate device identity and all required topology/active-use/namespace evidence immediately before writes;
+7. fail safely if device identity, topology, namespace visibility, mount state, swap state, or other critical safety evidence changes; and
 8. complete image-backed destructive integration tests before physical write support is enabled.
 
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
@@ -94,7 +97,7 @@ cargo test --all-targets
 cargo run -p bootctl -- list-linux-devices
 ```
 
-This command reads Linux sysfs, mount, and active-swap metadata, including bounded bidirectional `holders`/`slaves` topology. It does not open a block-device node for writing.
+This command reads Linux sysfs, caller-visible mount-namespace, mount, and active-swap metadata, including bounded bidirectional `holders`/`slaves` topology. It displays visible mount-namespace identities and whether visible namespace coverage was complete for the probe. It does not open a block-device node for writing.
 
 ### Plan a discovered Linux device
 

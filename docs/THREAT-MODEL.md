@@ -2,7 +2,7 @@
 
 ## Scope
 
-This threat model begins with the highest-risk GoreeCloud Boot behavior: selecting and modifying removable block devices. It expands as Linux discovery/topology/active-use evidence and GPT metadata generation are implemented, while physical block-device writes remain intentionally disabled.
+This threat model begins with the highest-risk GoreeCloud Boot behavior: selecting and modifying removable block devices. It expands as Linux discovery/topology/visible-mount-namespace/active-use evidence and GPT metadata generation are implemented, while physical block-device writes remain intentionally disabled.
 
 ## Assets to protect
 
@@ -12,14 +12,14 @@ This threat model begins with the highest-risk GoreeCloud Boot behavior: selecti
 - GoreeCloud Boot runtime integrity;
 - image/catalog trust metadata;
 - release provenance and signing material;
-- device identity, topology, and active-use state used for destructive authorization.
+- device identity, topology, visible mount-namespace, and active-use state used for destructive authorization.
 
 ## Current trust boundary
 
 The current implementation has two evidence paths:
 
 1. explicit command-line development evidence used by `plan-device`; and
-2. read-only Linux discovery using sysfs, mountinfo, `/proc/swaps`, and available persistent aliases.
+2. read-only Linux discovery using sysfs, caller-visible procfs mount namespaces/mountinfo, `/proc/swaps`, and available persistent aliases.
 
 Neither path authorizes a destructive operation. No current command opens a physical block-device node for writing.
 
@@ -31,27 +31,27 @@ The only current write path creates a **new sparse regular file** for GPT metada
 
 A removable device can change from `/dev/sdb` to another path, or a different device can later appear at the same path.
 
-**Current controls:** Linux discovery records major/minor identity, `diskseq` when available, capacity, logical-block size, removable/read-only state, available WWID/serial/`by-id` identity, bounded bidirectional holder/slave topology, mounted-topology intersection, and active-swap-topology intersection. A revalidation token can compare a later snapshot, including holder/slave topology, mount, and swap-state changes.
+**Current controls:** Linux discovery records major/minor identity, `diskseq` when available, capacity, logical-block size, removable/read-only state, available WWID/serial/`by-id` identity, bounded bidirectional holder/slave topology, mounted-topology intersection across readable visible mount namespaces, active-swap-topology intersection, visible mount-namespace identities, and namespace-coverage state. A revalidation token can compare a later snapshot, including holder/slave topology, namespace, mount, and swap-state changes.
 
-**Remaining controls before physical writes:** fresh comprehensive topology/active-use-aware discovery and identity comparison immediately before writes; abort on mismatch; bind the write to the revalidated device as strongly as platform APIs permit.
+**Remaining controls before physical writes:** fresh comprehensive topology/active-use/namespace-aware discovery and identity comparison immediately before writes; abort on mismatch or incomplete critical evidence; bind the write to the revalidated device as strongly as platform APIs permit.
 
 ### T2 — System disk incorrectly treated as removable
 
-Hardware, USB bridges, unusual storage, virtual environments, device mapper, encrypted mappings, software RAID, multipath, or incomplete discovery can produce misleading signals.
+Hardware, USB bridges, unusual storage, virtual environments, device mapper, encrypted mappings, software RAID, multipath, namespace isolation, or incomplete discovery can produce misleading signals.
 
-**Current controls:** whole-device removable/read-only state; direct child-partition identity; recursive bidirectional sysfs `holders`/`slaves` traversal from the candidate disk and partitions; canonical-path cycle protection; closure through shared holders to related backing members; intersection of the resulting topology with every major/minor identity in mountinfo; conservative rejection when any mounted filesystem is found; explicit root/boot evidence; active-swap discovery from `/proc/swaps` with swap-partition and swap-file backing-device resolution; rejection when active swap intersects the candidate topology; fail-closed omission when mandatory per-device topology evidence is unreadable; fail-closed Linux discovery when mandatory global swap evidence cannot be safely resolved.
+**Current controls:** whole-device removable/read-only state; direct child-partition identity; recursive bidirectional sysfs `holders`/`slaves` traversal from the candidate disk and partitions; canonical-path cycle protection; closure through shared holders to related backing members; enumeration and deduplication of caller-visible mount namespaces under `/proc`; union of readable visible mountinfo evidence; conservative rejection when any mounted filesystem is found; explicit root/boot evidence; candidate rejection when caller-visible namespace coverage is incomplete; active-swap discovery from `/proc/swaps` with swap-partition and visible swap-file backing-device resolution; rejection when active swap intersects the candidate topology; fail-closed ambiguous swap-file backing across namespaces; fail-closed omission when mandatory per-device topology evidence is unreadable; fail-closed Linux discovery when mandatory global swap evidence cannot be safely resolved.
 
-**Residual risk:** the implemented holder/slave/mount/swap model is bounded. Relevant device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, mount/swap namespace, unusual storage, and other relationships have not been exhaustively qualified for destructive use.
+**Residual risk:** the implemented holder/slave/visible-namespace/mount/swap model is bounded. Relevant device-mapper, encryption, software RAID, multipath, hotplug/reconfiguration, procfs/PID/mount-namespace visibility constraints, unusual storage, and other relationships have not been exhaustively qualified for destructive use. The caller cannot prove that namespaces hidden from or inaccessible through its `/proc` do not exist.
 
-**Required controls before physical writes:** conservative topology/active-use graph sufficient to reject active host storage dependencies; validation across representative complex storage stacks and namespace configurations; multiple independent signals where appropriate; fail closed on contradictory or incomplete critical evidence.
+**Required controls before physical writes:** conservative topology/active-use graph sufficient to reject active host storage dependencies; validation across representative complex storage stacks, procfs configurations, privilege boundaries, containers, PID/mount namespaces, and other namespace configurations; multiple independent signals where appropriate; fail closed on contradictory or incomplete critical evidence.
 
-### T3 — Time-of-check/time-of-use device or topology replacement
+### T3 — Time-of-check/time-of-use device, topology, namespace, or active-use replacement
 
-The target can disappear and a new device can occupy its path after selection. A holder/slave relationship, mounted state, or active-swap state can also change after assessment.
+The target can disappear and a new device can occupy its path after selection. A holder/slave relationship, visible mount-namespace set, namespace coverage, mounted state, or active-swap state can also change after assessment.
 
-**Current controls:** `LinuxRevalidationToken` captures selected identity, removable/read-only state, the complete discovered bidirectional topology device set, mounted-topology device numbers, and active-swap-topology device numbers for comparison against a later probe. Synthetic tests verify that mount/swap changes and the addition of a slave-connected topology member invalidate the token.
+**Current controls:** `LinuxRevalidationToken` captures selected identity, removable/read-only state, the complete discovered bidirectional topology device set, mounted-topology device numbers, active-swap-topology device numbers, caller-visible mount-namespace identities, and namespace-coverage state for comparison against a later probe. Synthetic tests verify that mount/swap changes, the addition of a slave-connected topology member, and a visible namespace-set change invalidate the token.
 
-**Required controls before physical writes:** fresh discovery close to use; compare stable/current-instance identity and capacity/geometry/topology/active-use state; re-open/re-identify immediately before writes; keep the transaction bound to the verified device handle where possible.
+**Required controls before physical writes:** fresh discovery close to use; compare stable/current-instance identity and capacity/geometry/topology/namespace/active-use state; re-open/re-identify immediately before writes; keep the transaction bound to the verified device handle where possible.
 
 ### T4 — Arithmetic or geometry error damages media
 
@@ -127,6 +127,16 @@ A network feature could create dependency on an external service or expose local
 
 **Required controls:** network boot remains optional; local boot works offline; network destinations/purpose are explicit; least data and least privilege.
 
+### T14 — Hidden or inaccessible mount namespace contains target storage
+
+A target may be mounted in a mount namespace that the calling process cannot observe because of procfs restrictions, permissions, container/PID namespace boundaries, `hidepid`, or another isolation mechanism.
+
+**Current controls:** discovery does not treat `/proc/self/mountinfo` as system-wide. It enumerates caller-visible numeric process entries, deduplicates their mount namespaces, unions readable mount evidence, and rejects every candidate when a caller-visible process or distinct visible namespace cannot be inspected safely.
+
+**Residual risk:** an invisible namespace is, by definition, outside the evidence currently available to this process. Complete inspection of the visible set does not prove the absence of hidden namespaces.
+
+**Required controls before physical writes:** define and validate the supported execution/privilege environment so required namespace evidence is observable; test restrictive procfs, PID namespace, container, and privilege configurations; add stronger platform evidence or refuse destructive operation where sufficient namespace visibility cannot be established.
+
 ## Destructive-operation authorization model
 
 A future write-capable flow should preserve distinct states:
@@ -151,25 +161,28 @@ For each Linux whole-device candidate, current discovery:
 4. canonicalizes each discovered node and deduplicates canonical paths so reciprocal relation links terminate safely;
 5. follows shared holders back down through their slaves so related backing members can enter the candidate safety topology;
 6. builds a sorted set of discovered topology major/minor identities;
-7. parses all major/minor identities and mount points in `/proc/self/mountinfo`;
-8. rejects the candidate when the topology intersects mounted filesystem identities;
-9. parses `/proc/swaps` as mandatory global safety evidence;
-10. resolves active swap partitions through sysfs and active swap files through their deepest containing mountinfo filesystem;
-11. rejects the candidate when the topology intersects resolved active-swap identities; and
-12. places topology, mounted-topology, and active-swap-topology state into the revalidation token.
+7. reads the current process mount namespace identity and `/proc/self/mountinfo`;
+8. enumerates caller-visible numeric process entries under `/proc`, deduplicates additional namespaces by `/proc/<pid>/ns/mnt` identity, and unions readable distinct `/proc/<pid>/mountinfo` evidence;
+9. marks visible namespace coverage incomplete and makes every candidate ineligible when a caller-visible namespace cannot be safely inspected;
+10. rejects the candidate when the topology intersects mounted filesystem identities from the readable visible namespace union;
+11. parses `/proc/swaps` as mandatory global safety evidence;
+12. resolves active swap partitions through sysfs and active swap files through deepest visible mount evidence, failing closed when deepest backing evidence is ambiguous across namespaces;
+13. rejects the candidate when the topology intersects resolved active-swap identities; and
+14. places topology, mounted-topology, active-swap-topology, visible namespace identities, and namespace-coverage state into the revalidation token.
 
-Synthetic evidence confirms that a mounted or active-swap sibling backing member discovered through a shared holder rejects the candidate, reciprocal links do not loop, and adding a new slave-connected topology member invalidates a prior revalidation token.
+Synthetic evidence confirms that a mounted or active-swap sibling backing member discovered through a shared holder rejects the candidate, reciprocal links do not loop, a mount visible only in another readable namespace rejects the candidate, incomplete visible namespace coverage rejects candidates, ambiguous swap-file backing fails discovery, and adding a new slave-connected topology member or visible mount namespace invalidates a prior revalidation token.
 
-Unreadable mandatory per-device topology data fails closed for the affected candidate. Unreadable, malformed, unsupported, or unresolvable active-swap evidence fails Linux discovery globally. This is not a claim that sysfs `holders`/`slaves` plus mountinfo plus `/proc/swaps` is a complete Linux destructive-target safety model.
+Unreadable mandatory per-device topology data fails closed for the affected candidate. Incomplete caller-visible mount-namespace inspection rejects all candidates. Unreadable, malformed, unsupported, ambiguous, or otherwise unresolvable active-swap evidence fails Linux discovery globally. This is not a claim that sysfs `holders`/`slaves` plus caller-visible procfs mount namespaces plus `/proc/swaps` is a complete Linux destructive-target safety model.
 
 ## Release blockers before physical disk writing
 
 The project must not enable or advertise physical destructive provisioning as supported until at least the following exist:
 
-- topology/active-use-aware platform-native device discovery sufficient to protect active host storage across supported Linux configurations;
-- validated coverage across representative device-mapper, encryption, RAID, multipath, hotplug/reconfiguration, mount/swap namespace, unusual storage, and other system-storage configurations;
+- topology/active-use/namespace-aware platform-native device discovery sufficient to protect active host storage across supported Linux configurations;
+- validated coverage across representative device-mapper, encryption, RAID, multipath, hotplug/reconfiguration, procfs/PID/mount-namespace visibility constraints, unusual storage, and other system-storage configurations;
+- a defined supported privilege/procfs environment or equivalent evidence sufficient to address hidden-namespace risk;
 - stable/current-instance identity strategy;
-- fresh pre-write identity, topology, mount, swap, and other required state revalidation;
+- fresh pre-write identity, topology, namespace, mount, swap, and other required state revalidation;
 - explicit destructive confirmation;
 - production-unique GPT identity generation;
 - sector-aware GPT implementation validated independently;
@@ -181,12 +194,13 @@ The project must not enable or advertise physical destructive provisioning as su
 
 ## Current residual risk
 
-Because physical block-device writes remain disabled, the primary present risks are incorrect discovery/assessment output, incomplete topology/active-use interpretation, malformed development GPT metadata, accidental misuse of the regular-file test command, or misleading documentation.
+Because physical block-device writes remain disabled, the primary present risks are incorrect discovery/assessment output, incomplete topology/namespace/active-use interpretation, malformed development GPT metadata, accidental misuse of the regular-file test command, or misleading documentation.
 
 `CAPABILITIES.md`, CLI output, tests, and review records must continue to state that:
 
-- Linux discovery/topology/swap handling is read-only evidence;
-- bidirectional `holders`/`slaves` closure plus mountinfo and active-swap resolution is bounded and does not yet qualify every destructive-target relationship;
+- Linux discovery/topology/visible-namespace/swap handling is read-only evidence;
+- bidirectional `holders`/`slaves` closure plus caller-visible namespace/mount evidence and active-swap resolution is bounded and does not yet qualify every destructive-target relationship;
+- complete inspection of the caller-visible namespace set does not prove hidden namespaces are absent;
 - a successful assessment/revalidation token is not write authorization;
 - GPT generation is currently a regular-file development path;
 - no bootable or production-capable device is currently produced.
