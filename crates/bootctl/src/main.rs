@@ -308,7 +308,10 @@ fn print_linux_device(device: &LinuxBlockDevice) {
         "  contains mounted boot: {}",
         yes_no(device.contains_mounted_boot)
     );
-    println!("  contains active swap: {}", yes_no(device.contains_active_swap));
+    println!(
+        "  contains active swap: {}",
+        yes_no(device.contains_active_swap)
+    );
     println!(
         "  topology device numbers: {}",
         format_device_numbers(&device.topology_device_numbers)

@@ -444,9 +444,9 @@ fn discover_active_swap_devices(
     swap_text: &str,
 ) -> Result<BTreeSet<DeviceNumber>, LinuxDiscoveryError> {
     let mut lines = swap_text.lines();
-    let header = lines.next().ok_or_else(|| {
-        LinuxDiscoveryError::new(&paths.proc_swaps, "active-swap table is empty")
-    })?;
+    let header = lines
+        .next()
+        .ok_or_else(|| LinuxDiscoveryError::new(&paths.proc_swaps, "active-swap table is empty"))?;
     let header_fields = header.split_whitespace().collect::<Vec<_>>();
     if header_fields.len() < 2 || header_fields[0] != "Filename" || header_fields[1] != "Type" {
         return Err(LinuxDiscoveryError::new(
@@ -465,7 +465,10 @@ fn discover_active_swap_devices(
         if fields.len() < 5 {
             return Err(LinuxDiscoveryError::new(
                 &paths.proc_swaps,
-                format!("active-swap line {} is too short to parse safely", index + 2),
+                format!(
+                    "active-swap line {} is too short to parse safely",
+                    index + 2
+                ),
             ));
         }
 
@@ -505,20 +508,18 @@ fn resolve_swap_partition_device(
             )
         })?;
 
-    if let Some(device) = try_read_device_number(
-        &paths.sys_block_root.join(kernel_name).join("dev"),
-    )? {
+    if let Some(device) =
+        try_read_device_number(&paths.sys_block_root.join(kernel_name).join("dev"))?
+    {
         return Ok(device);
     }
 
     let entries = fs::read_dir(&paths.sys_block_root)
         .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
     for entry in entries {
-        let entry = entry
-            .map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
-        if let Some(device) =
-            try_read_device_number(&entry.path().join(kernel_name).join("dev"))?
-        {
+        let entry =
+            entry.map_err(|error| LinuxDiscoveryError::io(&paths.sys_block_root, &error))?;
+        if let Some(device) = try_read_device_number(&entry.path().join(kernel_name).join("dev"))? {
             return Ok(device);
         }
     }
