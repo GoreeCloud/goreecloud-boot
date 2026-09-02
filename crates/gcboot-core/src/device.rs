@@ -4,10 +4,10 @@ use crate::layout::MIN_DEVICE_BYTES;
 
 /// Evidence about a candidate block device.
 ///
-/// In the current development foundation these values are supplied explicitly
-/// by the caller. A future write-capable implementation must discover and
-/// revalidate authoritative device identity instead of trusting user-supplied
-/// booleans.
+/// Evidence may come from explicit development input or from a platform probe.
+/// A future write-capable implementation must revalidate authoritative device
+/// identity immediately before destructive operations instead of trusting a
+/// stale assessment or user-supplied booleans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceEvidence {
     pub device_path: String,

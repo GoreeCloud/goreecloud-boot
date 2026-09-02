@@ -5,6 +5,7 @@
 - **Product:** GoreeCloud Boot
 - **Development model:** Original GoreeCloud-native software
 - **Lifecycle:** Development foundation; not Stable or production-approved
+- **Current development version:** `0.1.0-dev.2`
 - **Initial host platform:** Linux
 - **Initial firmware target:** UEFI x86-64
 - **GoreeCloud-owned source license:** GPL-3.0-or-later
@@ -32,13 +33,14 @@ The product must remain:
 
 ## 4. Initial device layout
 
-The default layout is planned as GPT with a protective MBR where compatible.
+The intended default physical layout is GPT with a protective MBR where compatible.
 
 ### GCBOOT
 
 - purpose: boot-system partition;
 - planned filesystem: FAT32;
 - current planned size: 512 MiB;
+- current GPT type: EFI System Partition type GUID;
 - contains future UEFI boot chain, runtime, trusted configuration, verification material, and recovery metadata;
 - must be repairable or replaceable without erasing `GCDATA` where practical.
 
@@ -46,43 +48,100 @@ The default layout is planned as GPT with a protective MBR where compatible.
 
 - purpose: large user-facing data partition;
 - planned filesystem: exFAT, subject to validation before release;
-- occupies remaining usable device space after alignment and GPT-reserve space;
+- current GPT type: Microsoft Basic Data partition type GUID;
+- occupies remaining usable device space after alignment and end reserve;
 - may later contain supported boot images, checksums, signatures, persistence data, and sidecar metadata.
 
-The current Rust foundation implements layout calculation only. It does not partition devices.
+The current Rust foundation implements byte/sector layout calculation and protective-MBR/GPT metadata generation for development regular-file images only. It does not partition physical devices or create filesystems.
 
 ## 5. Current implemented foundation
 
-The repository currently implements only the development foundation:
+The repository currently implements these development capabilities:
 
-- deterministic `GCBOOT`/`GCDATA` layout planning;
-- conservative target-safety assessment from explicit device evidence;
+- deterministic `GCBOOT`/`GCDATA` byte-layout planning;
+- checked conversion to logical-block ranges for supported sector sizes, including 512-byte and 4096-byte logical blocks;
+- conservative target-safety assessment;
+- read-only Linux whole-block-device discovery from sysfs, mountinfo, and available persistent aliases;
+- collection of current device identity evidence including major/minor number, capacity, logical/physical block size, `diskseq` when available, and available WWID/serial/`by-id` identity;
+- directly enumerated child-partition association with mounted root and boot filesystems;
+- revalidation tokens for later comparison of selected device identity evidence;
+- in-memory protective-MBR and redundant GPT header/entry-array generation with CRC32;
+- development-only sparse regular-file GPT image creation with no-overwrite behavior and read-back metadata verification;
 - initial catalog-entry validation;
-- development-only `bootctl plan-device` output;
-- unit tests for those rules.
+- development `bootctl` inspection/planning/test-image commands;
+- unit and synthetic-fixture tests for those rules.
 
-No device discovery, partition-table write, filesystem formatting, bootloader installation, image booting, signature verification, or recovery write path is currently implemented.
+No physical block-device write, filesystem formatting, bootloader installation, image booting, cryptographic content verification, or production recovery write path is currently implemented.
 
-## 6. Target-safety requirements
+## 6. Linux device-discovery requirements
 
-A future destructive provisioning path must not run merely because a path such as `/dev/sdb` was supplied.
+The Linux discovery layer is read-only and must remain separable from future destructive authorization.
+
+Current discovery reads standard Linux metadata sufficient to identify whole block devices and directly enumerated child partitions. It must not treat a mutable path such as `/dev/sdb` as stable identity by itself.
+
+Current discovery evidence includes, where available:
+
+- whole-device major/minor identity;
+- child-partition major/minor identities;
+- kernel device name and current `/dev` node;
+- capacity;
+- logical and physical block sizes;
+- removable and read-only state;
+- `diskseq` current-instance identity;
+- vendor, model, serial, and WWID;
+- resolved `/dev/disk/by-id` aliases;
+- mounted root and boot associations from mountinfo.
+
+Discovery failure or missing mandatory geometry data must fail conservatively for the affected device rather than fabricating eligibility.
+
+Before any physical destructive write path can be enabled, Linux topology analysis must be extended or otherwise validated to conservatively handle relevant device-mapper stacks, encrypted mappings, software RAID, multipath, swap, and other storage relationships that could hide a system-disk dependency.
+
+## 7. Target-safety and authorization requirements
+
+A future destructive provisioning path must not run merely because a path or a previously successful assessment was supplied.
 
 Before writes are permitted, the implementation must:
 
-1. discover and record stable target identity;
-2. positively establish removable-media eligibility;
-3. reject known root, boot, or system-disk targets;
+1. discover and record current target identity;
+2. positively establish removable-media eligibility using sufficient evidence;
+3. reject known root, boot, swap, system-disk, or contradictory storage topology;
 4. reject read-only or undersized media;
-5. show the target identity and capacity to the user;
+5. show stable/current identity, geometry, topology, and capacity to the user;
 6. require explicit destructive authorization;
 7. re-read and compare target identity immediately before writes;
 8. abort on target disappearance, replacement, identity change, or contradictory evidence;
-9. perform interruption-aware partition/boot updates where practical; and
-10. preserve `GCDATA` during routine boot-runtime update and repair operations.
+9. bind writes to the revalidated target as strongly as platform APIs reasonably permit;
+10. perform interruption-aware partition/boot updates where practical; and
+11. preserve `GCDATA` during routine boot-runtime update and repair operations.
 
-The current target evaluator is only an early guardrail and is not sufficient authorization for destructive writes.
+The current Linux revalidation token and target assessment are early controls only and are not sufficient destructive authorization.
 
-## 7. Catalog model
+## 8. Sector and GPT model
+
+The current sector planner requires a logical block size that:
+
+- is at least 512 bytes;
+- is a power of two;
+- does not exceed 1 MiB; and
+- divides the 1 MiB layout alignment exactly.
+
+Device capacity must be divisible by the logical block size.
+
+Current GPT metadata generation includes:
+
+- a protective MBR in logical block 0;
+- primary GPT header at LBA 1;
+- a 128-entry, 128-byte-per-entry primary partition-entry array beginning at LBA 2;
+- an equivalent backup partition-entry array before the final logical block;
+- backup GPT header in the final logical block;
+- CRC32 over the active partition-entry bytes and GPT header bytes;
+- validation that both planned partitions fall within GPT usable LBAs and do not overlap.
+
+Fixed GUIDs are used only by the development test-image helper. Physical provisioning must generate unique disk and partition GUIDs using an approved random/identity source and must never reuse the development constants.
+
+The regular-file GPT test path must create a new file without overwriting an existing path, must not create output beneath protected pseudo-filesystem/device roots such as `/dev`, `/sys`, or `/proc`, and must verify generated metadata by reading it back.
+
+## 9. Catalog model
 
 The first catalog model supports explicit entries with:
 
@@ -97,7 +156,7 @@ Current validated boot kinds are schema-level values only. A valid catalog recor
 
 Catalog paths must be relative and must reject parent traversal. SHA-256 metadata, when present, must be exactly 64 hexadecimal characters.
 
-## 8. Boot compatibility policy
+## 10. Boot compatibility policy
 
 GoreeCloud Boot must not claim universal arbitrary-image compatibility.
 
@@ -112,13 +171,15 @@ Each boot method and image family must have explicit support state and evidence.
 
 None of these boot methods are implemented by the current foundation unless `CAPABILITIES.md` later records verified implementation.
 
-## 9. Technology selection
+## 11. Technology selection
 
 Rust is the primary language for the native safety-critical foundation because GoreeCloud prefers memory-safe systems languages for low-level and security-sensitive work.
 
+The current Rust workspace intentionally has no external runtime crates. New dependencies require a documented engineering benefit plus provenance, maintenance, security, and licensing review.
+
 C or C++ may be used only when required by firmware, hardware, upstream compatibility, or another documented technical reason. Shell is limited to appropriate build, test, packaging, and operational automation.
 
-## 10. Third-party foundations
+## 12. Third-party foundations
 
 Potential bounded foundations include GNU GRUB, EDK II, and optional iPXE. They are not part of the current repository implementation.
 
@@ -135,7 +196,7 @@ Before any third-party component is distributed, the project must record:
 
 GPLv2-only and GPLv3-only code must not be combined into an incompatible derivative work.
 
-## 11. GoreeCloud platform-system responsibilities
+## 13. GoreeCloud platform-system responsibilities
 
 The following are required product responsibilities, but documentation must distinguish planned from implemented integration.
 
@@ -145,15 +206,15 @@ The future preboot interface must adapt Glaze UI principles to firmware constrai
 
 ### Wardveil Security
 
-Planned responsibilities include release provenance, runtime integrity, image verification, tamper handling, malicious metadata resistance, safe update policy, and trust-state communication.
+Planned responsibilities include release provenance, runtime integrity, image verification, tamper handling, malicious metadata resistance, safe update policy, and trust-state communication. The current native safety controls do not by themselves constitute substantive Wardveil integration.
 
 ### Privacy Shield
 
-Core operation must remain local and offline-first. No image names, checksums, device identifiers, boot history, or local configuration may be transmitted merely to use the product.
+Core operation must remain local and offline-first. No image names, checksums, device identifiers, boot history, or local configuration may be transmitted merely to use the product. Current discovery and GPT planning are local-only but no substantive Privacy Shield integration contract is claimed yet.
 
 ### Everkeep
 
-The product must support reconstructable boot configuration, repair paths, exportable configuration, preserved user data, and documented restoration testing.
+The product must support reconstructable boot configuration, repair paths, exportable configuration, preserved user data, and documented restoration testing. Current redundant GPT metadata generation is only a development foundation and not an Everkeep repair capability.
 
 ### GoreeCloud Mesh
 
@@ -163,12 +224,14 @@ Future Mesh integration may expose host-side lifecycle events, inventory, or man
 
 Identity is not required for the bare offline boot menu. It becomes applicable only to privileged host-side administration, delegated management, centrally managed policy, or authenticated network functions.
 
-## 12. Testing and release qualification
+## 14. Testing and release qualification
 
-Required validation will grow with implementation and may include:
+Required validation grows with implementation and includes, where applicable:
 
-- unit tests for safety, catalog, and layout rules;
+- unit tests for safety, discovery, catalog, layout, and GPT rules;
+- synthetic Linux sysfs/mount fixtures rather than reliance on CI-runner disk topology;
 - property/boundary testing for arithmetic and malformed input;
+- regular-file destructive metadata tests before block-device writes;
 - virtual UEFI testing with QEMU/OVMF;
 - physical removable-media testing;
 - representative hardware validation;
@@ -176,11 +239,11 @@ Required validation will grow with implementation and may include:
 - interrupted-update and recovery tests;
 - dependency and license review;
 - provenance, checksum, and signature validation;
-- security review before any destructive path is enabled.
+- security review before any physical destructive path is enabled.
 
-A successful source build is not Stable qualification.
+A successful source build or unit-test run is not Stable qualification.
 
-## 13. Initial engineering milestone
+## 15. Initial engineering milestone
 
 The first bootable milestone is a non-Stable UEFI x86-64 prototype that can eventually:
 
@@ -194,4 +257,4 @@ The first bootable milestone is a non-Stable UEFI x86-64 prototype that can even
 - update or repair `GCBOOT` without erasing `GCDATA`;
 - run under QEMU/OVMF before physical-device acceptance.
 
-The current repository has begun only the safety/catalog/layout foundation for this milestone.
+The current repository has advanced the safety foundation through read-only Linux discovery, sector-aware planning, and regular-file GPT metadata generation. Physical provisioning and boot execution remain outside the implemented boundary.

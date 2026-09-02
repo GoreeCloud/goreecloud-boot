@@ -1,6 +1,6 @@
 [package]
 name = "gcboot-core"
-description = "Safety, layout, and catalog primitives for GoreeCloud Boot"
+description = "Safety, Linux discovery, layout, GPT, and catalog primitives for GoreeCloud Boot"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

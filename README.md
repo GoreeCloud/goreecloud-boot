@@ -2,24 +2,27 @@
 
 GoreeCloud Boot is a native open-source multiboot USB platform under active development for booting, installing, recovering, diagnosing, and maintaining operating systems and GoreeCloud environments from removable media.
 
-> **Development status:** Foundation only. This repository does **not** yet provide a bootable USB release, production provisioning, Secure Boot support, Windows installation-media support, persistence, network boot, ARM64 support, or legacy BIOS support.
+> **Development status:** Foundation only. This repository does **not** yet provide physical USB provisioning, a bootable USB release, filesystem creation, a UEFI runtime, Secure Boot, Windows installation-media support, persistence, network boot, ARM64 support, or legacy BIOS support.
 
 ## Current repository capabilities
 
 The current foundation provides:
 
-- a dependency-free Rust workspace for the initial host-side safety and catalog logic;
-- deterministic planning for the future `GCBOOT` and `GCDATA` partition layout;
-- conservative removable-target safety assessment that rejects known system/root/boot disks, non-removable devices, read-only devices, and undersized media;
-- validation for initial GoreeCloud Boot catalog-entry identifiers, relative image paths, architecture, boot kind, and optional SHA-256 metadata;
-- a development-only `bootctl` CLI that evaluates supplied device evidence and prints a proposed layout without writing to a disk;
-- unit tests for the implemented safety, layout, and catalog rules.
+- a dependency-free Rust workspace for host-side safety, discovery, layout, GPT metadata, catalog logic, and `bootctl`;
+- read-only Linux whole-block-device discovery from sysfs, mount metadata, and persistent `by-id` aliases where available;
+- conservative target assessment that rejects non-removable, read-only, undersized, mounted-root, and mounted-boot device families;
+- device revalidation tokens incorporating current Linux identity evidence such as major/minor identity, `diskseq`, capacity, logical block size, and available persistent identity data;
+- deterministic byte and sector planning for the future `GCBOOT` and `GCDATA` layout;
+- in-memory protective-MBR and redundant GPT metadata generation for 512-byte and 4096-byte logical-block test geometries;
+- a development command that writes generated GPT metadata only to a **new sparse regular file**, then reads it back for verification;
+- validation for initial catalog-entry identifiers, relative image paths, architecture, boot kind, and optional SHA-256 metadata;
+- unit and synthetic-fixture tests for the implemented safety, Linux discovery, layout, GPT, and catalog rules.
 
 See [CAPABILITIES.md](CAPABILITIES.md) for the canonical current-state capability inventory.
 
 ## Planned architecture
 
-The intended device layout is:
+The intended physical device layout remains:
 
 ```text
 GoreeCloud Boot device
@@ -35,7 +38,7 @@ GoreeCloud Boot device
     └── catalog metadata
 ```
 
-The initial firmware target is UEFI x86-64. The project will add boot methods only after each method has explicit implementation and validation evidence.
+The initial firmware target is UEFI x86-64. Boot methods will be added only after each method has explicit implementation and validation evidence.
 
 ## Native development boundary
 
@@ -47,17 +50,18 @@ Mature open-source foundations such as GNU GRUB, EDK II, and optional iPXE may b
 
 Provisioning removable media is inherently destructive. Wrong-disk prevention is a release-blocking requirement.
 
-The current code deliberately contains **no disk-writing implementation**. The safety evaluator is being established before partitioning code so destructive behavior cannot silently outrun its guardrails.
+The current code deliberately contains **no physical block-device write implementation**. Linux discovery reads metadata only. The GPT development path writes only to a newly created regular sparse file and refuses existing output paths and output beneath `/dev`, `/sys`, or `/proc`.
 
-Future provisioning must, at minimum:
+Future physical provisioning must, at minimum:
 
-1. positively identify the requested target;
-2. reject system/root/boot disks by default;
+1. discover the requested target from platform evidence rather than trusting a mutable path alone;
+2. reject system/root/boot disks and other contradictory topology by default;
 3. require removable-media evidence;
-4. display stable device identity and capacity;
-5. require explicit authorization before destructive changes;
-6. revalidate device identity immediately before writes; and
-7. fail safely if device identity changes.
+4. display stable identity, current-instance identity, geometry, and capacity;
+5. require explicit destructive authorization;
+6. revalidate device identity immediately before writes;
+7. fail safely if device identity or topology changes; and
+8. complete image-backed destructive integration tests before physical write support is enabled.
 
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
@@ -67,7 +71,7 @@ Prerequisites:
 
 - Rust 1.85 or newer;
 - Cargo;
-- a supported Linux development environment for the initial `bootctl` work.
+- Linux for the current host-device discovery commands.
 
 Run the checks:
 
@@ -77,7 +81,34 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-Run the development planner with explicit evidence:
+### Read Linux device metadata
+
+```bash
+cargo run -p bootctl -- list-linux-devices
+```
+
+This command reads Linux sysfs and mount metadata. It does not open a block-device node for writing.
+
+### Plan a discovered Linux device
+
+```bash
+cargo run -p bootctl -- plan-linux-device --device /dev/disk/by-id/EXAMPLE
+```
+
+The selected whole device must match the current discovery report by device node or discovered `by-id` alias. Passing assessment still means **planning only**, not write authorization.
+
+### Generate a GPT test image
+
+```bash
+cargo run -p bootctl -- create-test-gpt-image \
+  --output ./gcboot-gpt-test.img \
+  --size-bytes 8589934592 \
+  --logical-block-size 512
+```
+
+This creates a new sparse regular file with protective-MBR/GPT metadata and verifies the generated metadata by reading it back. It does **not** create FAT32 or exFAT filesystems and is **not** a bootable GoreeCloud Boot image.
+
+### Manual evidence planner
 
 ```bash
 cargo run -p bootctl -- plan-device \
@@ -89,7 +120,7 @@ cargo run -p bootctl -- plan-device \
   --read-only no
 ```
 
-This command only evaluates the supplied evidence and prints a layout proposal. It does not inspect or modify `/dev/sdX`.
+This legacy development command evaluates only the supplied values and does not inspect or modify `/dev/sdX`.
 
 ## Repository documentation
 
@@ -102,11 +133,11 @@ This command only evaluates the supplied evidence and prints a layout proposal. 
 - [SECURITY.md](SECURITY.md) — security posture and reporting guidance
 - [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — dependency and provenance status
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — component architecture
-- [docs/DEVICE-LAYOUT.md](docs/DEVICE-LAYOUT.md) — partition-layout contract
+- [docs/DEVICE-LAYOUT.md](docs/DEVICE-LAYOUT.md) — layout/GPT planning contract
 - [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) — destructive-operation threat model
 
 ## License
 
-GoreeCloud-owned source in this repository is licensed under the GNU General Public License version 3. See [LICENSE](LICENSE).
+GoreeCloud-owned source in this repository is licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) and the SPDX identifiers in source files.
 
-Third-party components, when introduced, retain their own licenses and must be tracked separately in the dependency/provenance documentation.
+Third-party components, when introduced, retain their own licenses and must be tracked separately in dependency/provenance documentation.
