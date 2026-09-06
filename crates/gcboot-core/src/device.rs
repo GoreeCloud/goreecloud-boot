@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::layout::MIN_DEVICE_BYTES;
+use std::path::Path;
 
 /// Evidence about a candidate block device.
 ///
@@ -37,6 +38,8 @@ impl TargetAssessment {
 
         if evidence.device_path.trim().is_empty() {
             reasons.push("device path is empty");
+        } else if !Path::new(&evidence.device_path).is_absolute() {
+            reasons.push("device path is not absolute");
         }
         if !evidence.removable {
             reasons.push("target is not positively identified as removable");
@@ -109,6 +112,17 @@ mod tests {
     fn eligible_assessment_never_authorizes_destructive_write() {
         let result = TargetAssessment::evaluate(&safe_evidence());
         assert!(result.eligible);
+        assert!(!result.destructive_write_authorized());
+    }
+
+    #[test]
+    fn rejects_relative_device_path() {
+        let mut evidence = safe_evidence();
+        evidence.device_path = "dev/sdz".to_owned();
+
+        let result = TargetAssessment::evaluate(&evidence);
+        assert!(!result.eligible);
+        assert!(result.reasons.contains(&"device path is not absolute"));
         assert!(!result.destructive_write_authorized());
     }
 
