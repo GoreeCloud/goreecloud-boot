@@ -68,6 +68,17 @@ impl TargetAssessment {
             reasons,
         }
     }
+
+    /// Current Development assessments are planning evidence only.
+    ///
+    /// The repository intentionally contains no physical block-device write path,
+    /// so an eligible assessment must never be treated as destructive-write
+    /// authorization. A future write-capable milestone must replace this invariant
+    /// only alongside separately reviewed authorization and immediate revalidation.
+    #[must_use]
+    pub const fn destructive_write_authorized(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +106,13 @@ mod tests {
     }
 
     #[test]
+    fn eligible_assessment_never_authorizes_destructive_write() {
+        let result = TargetAssessment::evaluate(&safe_evidence());
+        assert!(result.eligible);
+        assert!(!result.destructive_write_authorized());
+    }
+
+    #[test]
     fn rejects_system_disk_evidence() {
         let mut evidence = safe_evidence();
         evidence.contains_mounted_root = true;
@@ -104,6 +122,7 @@ mod tests {
         let result = TargetAssessment::evaluate(&evidence);
         assert!(!result.eligible);
         assert_eq!(result.reasons.len(), 2);
+        assert!(!result.destructive_write_authorized());
     }
 
     #[test]
