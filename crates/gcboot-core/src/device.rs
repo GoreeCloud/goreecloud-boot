@@ -46,9 +46,10 @@ impl TargetAssessment {
                 if !device_path.starts_with("/dev") {
                     reasons.push("device path is outside /dev");
                 }
-                if device_path.components().any(|component| {
-                    matches!(component, Component::CurDir | Component::ParentDir)
-                }) {
+                if device_path
+                    .components()
+                    .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+                {
                     reasons.push("device path is not normalized");
                 }
             }
