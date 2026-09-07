@@ -41,7 +41,11 @@ impl Display for LinuxProvisioningPlanError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TargetIneligible(reasons) => {
-                write!(formatter, "target is ineligible for provisioning planning: {}", reasons.join(", "))
+                write!(
+                    formatter,
+                    "target is ineligible for provisioning planning: {}",
+                    reasons.join(", ")
+                )
             }
             Self::Layout(error) => write!(formatter, "cannot plan target layout: {error}"),
         }
@@ -69,7 +73,9 @@ impl LinuxProvisioningPlan {
     ) -> Result<Self, LinuxProvisioningPlanError> {
         let assessment = device.assessment();
         if !assessment.eligible {
-            return Err(LinuxProvisioningPlanError::TargetIneligible(assessment.reasons));
+            return Err(LinuxProvisioningPlanError::TargetIneligible(
+                assessment.reasons,
+            ));
         }
         let layout = plan_sector_layout(device.size_bytes, device.logical_block_size)?;
         Ok(Self {
@@ -86,7 +92,8 @@ impl LinuxProvisioningPlan {
         let target_path_matches = self.target_devnode == current.devnode;
         let token_matches = self.revalidation_token.matches(current);
         let target_still_eligible = current.assessment().eligible;
-        let current_layout = plan_sector_layout(current.size_bytes, current.logical_block_size).ok();
+        let current_layout =
+            plan_sector_layout(current.size_bytes, current.logical_block_size).ok();
         let layout_matches_current_geometry = current_layout.as_ref() == Some(&self.layout);
         let planning_evidence_current = target_path_matches
             && token_matches
@@ -117,7 +124,10 @@ mod tests {
     use crate::linux::DeviceNumber;
 
     fn eligible_device() -> LinuxBlockDevice {
-        let number = DeviceNumber { major: 8, minor: 240 };
+        let number = DeviceNumber {
+            major: 8,
+            minor: 240,
+        };
         LinuxBlockDevice {
             kernel_name: "sdz".to_owned(),
             devnode: PathBuf::from("/dev/sdz"),
@@ -149,7 +159,8 @@ mod tests {
     #[test]
     fn exact_fresh_evidence_can_only_make_planning_evidence_current() {
         let device = eligible_device();
-        let plan = LinuxProvisioningPlan::from_discovered_device(&device).expect("eligible device should plan");
+        let plan = LinuxProvisioningPlan::from_discovered_device(&device)
+            .expect("eligible device should plan");
         let revalidation = plan.revalidate(&device);
         assert!(revalidation.planning_evidence_current);
         assert!(!revalidation.destructive_write_authorized);
@@ -159,7 +170,8 @@ mod tests {
     #[test]
     fn device_replacement_or_runtime_safety_change_invalidates_plan() {
         let device = eligible_device();
-        let plan = LinuxProvisioningPlan::from_discovered_device(&device).expect("eligible device should plan");
+        let plan = LinuxProvisioningPlan::from_discovered_device(&device)
+            .expect("eligible device should plan");
 
         let mut replacement = device.clone();
         replacement.diskseq = Some(43);
@@ -183,6 +195,9 @@ mod tests {
         device.removable = false;
         let error = LinuxProvisioningPlan::from_discovered_device(&device)
             .expect_err("non-removable target must not produce a plan");
-        assert!(matches!(error, LinuxProvisioningPlanError::TargetIneligible(_)));
+        assert!(matches!(
+            error,
+            LinuxProvisioningPlanError::TargetIneligible(_)
+        ));
     }
 }
