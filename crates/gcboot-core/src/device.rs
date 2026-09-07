@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::layout::MIN_DEVICE_BYTES;
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// Evidence about a candidate block device.
 ///
@@ -38,8 +38,20 @@ impl TargetAssessment {
 
         if evidence.device_path.trim().is_empty() {
             reasons.push("device path is empty");
-        } else if !Path::new(&evidence.device_path).is_absolute() {
-            reasons.push("device path is not absolute");
+        } else {
+            let device_path = Path::new(&evidence.device_path);
+            if !device_path.is_absolute() {
+                reasons.push("device path is not absolute");
+            } else {
+                if !device_path.starts_with("/dev") {
+                    reasons.push("device path is outside /dev");
+                }
+                if device_path.components().any(|component| {
+                    matches!(component, Component::CurDir | Component::ParentDir)
+                }) {
+                    reasons.push("device path is not normalized");
+                }
+            }
         }
         if !evidence.removable {
             reasons.push("target is not positively identified as removable");
@@ -123,6 +135,28 @@ mod tests {
         let result = TargetAssessment::evaluate(&evidence);
         assert!(!result.eligible);
         assert!(result.reasons.contains(&"device path is not absolute"));
+        assert!(!result.destructive_write_authorized());
+    }
+
+    #[test]
+    fn rejects_absolute_path_outside_dev() {
+        let mut evidence = safe_evidence();
+        evidence.device_path = "/tmp/fake-device".to_owned();
+
+        let result = TargetAssessment::evaluate(&evidence);
+        assert!(!result.eligible);
+        assert!(result.reasons.contains(&"device path is outside /dev"));
+        assert!(!result.destructive_write_authorized());
+    }
+
+    #[test]
+    fn rejects_lexically_unnormalized_device_path() {
+        let mut evidence = safe_evidence();
+        evidence.device_path = "/dev/disk/../sdz".to_owned();
+
+        let result = TargetAssessment::evaluate(&evidence);
+        assert!(!result.eligible);
+        assert!(result.reasons.contains(&"device path is not normalized"));
         assert!(!result.destructive_write_authorized());
     }
 
