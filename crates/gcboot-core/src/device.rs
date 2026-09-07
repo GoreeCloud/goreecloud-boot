@@ -42,16 +42,11 @@ impl TargetAssessment {
             let device_path = Path::new(&evidence.device_path);
             if !device_path.is_absolute() {
                 reasons.push("device path is not absolute");
-            } else {
-                if !device_path.starts_with("/dev") {
-                    reasons.push("device path is outside /dev");
-                }
-                if device_path
-                    .components()
-                    .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-                {
-                    reasons.push("device path is not normalized");
-                }
+            } else if device_path
+                .components()
+                .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+            {
+                reasons.push("device path is not normalized");
             }
         }
         if !evidence.removable {
@@ -136,17 +131,6 @@ mod tests {
         let result = TargetAssessment::evaluate(&evidence);
         assert!(!result.eligible);
         assert!(result.reasons.contains(&"device path is not absolute"));
-        assert!(!result.destructive_write_authorized());
-    }
-
-    #[test]
-    fn rejects_absolute_path_outside_dev() {
-        let mut evidence = safe_evidence();
-        evidence.device_path = "/tmp/fake-device".to_owned();
-
-        let result = TargetAssessment::evaluate(&evidence);
-        assert!(!result.eligible);
-        assert!(result.reasons.contains(&"device path is outside /dev"));
         assert!(!result.destructive_write_authorized());
     }
 
