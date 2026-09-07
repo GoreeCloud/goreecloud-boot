@@ -13,6 +13,8 @@ pub mod gpt;
 pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod provisioning;
 
 pub use catalog::{Architecture, BootKind, CatalogEntry, CatalogError};
 pub use device::{DeviceEvidence, TargetAssessment};
@@ -29,4 +31,8 @@ pub use layout::{
 pub use linux::{
     DeviceNumber, DeviceNumberParseError, DiscoveryWarning, LinuxBlockDevice, LinuxDiscoveryError,
     LinuxDiscoveryReport, LinuxProbePaths, LinuxRevalidationToken, discover_linux_block_devices,
+};
+#[cfg(target_os = "linux")]
+pub use provisioning::{
+    LinuxProvisioningPlan, LinuxProvisioningPlanError, LinuxProvisioningRevalidation,
 };
