@@ -1,0 +1,16 @@
+/target/
+**/*.rs.bk
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+*.img
+*.iso
+*.raw
+*.qcow2
+*.vhd
+*.vhdx
